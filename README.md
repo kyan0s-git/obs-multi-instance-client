@@ -1,0 +1,251 @@
+# OBS Fleet
+
+A control surface for running **several OBS Studio instances at once**, built for
+broadcast and production teams: ISO recording rigs, multi-destination streaming,
+redundant encoders, and multi-operator setups where one machine drives more than
+one OBS.
+
+OBS Fleet does not replace OBS. It creates and manages isolated OBS
+configurations, launches them together, watches their health, keeps their
+profiles and scene collections in sync, and gives you one screen to drive all of
+them from.
+
+---
+
+## What it does
+
+**Instances.** Create an instance and you get a folder with its own OBS
+configuration, its own recording directory, and its own control port. Create
+twelve and they run side by side without touching each other's settings. Clone
+an existing instance, seed a new one from your current OBS setup, or scan a
+workspace folder to re-adopt instances moved from another machine.
+
+**Launch.** Start one instance or the whole fleet in order, with a configurable
+stagger between launches. Every launch flag OBS supports is exposed — profile,
+scene collection, starting scene, studio mode, auto-record, safe mode — and the
+exact command line is inspectable before you run it.
+
+**Multiview.** Watch every instance's program output in one grid, and drive them
+from the same screen: switch scenes, toggle source visibility, ride the audio
+mixer, start and stop recording and streaming, take a studio-mode transition.
+
+**Window layout.** When you need the real OBS interface rather than a preview,
+arrange the actual OBS windows across your desktop in a grid, columns, rows,
+main-and-stack or cascade, on whichever display you choose.
+
+**Telemetry.** FPS, frame render time, render and encoder frame drops, CPU and
+memory per instance, live bitrate, data written, disk headroom and stream
+congestion — sampled continuously, charted over time, and turned into a health
+verdict per instance. Host CPU, memory, GPU utilisation and VRAM sit alongside
+them, because on a multi-instance rig the machine is usually the bottleneck.
+
+**Sync.** Copy profiles and scene collections from one instance to any number of
+others, with a consistency matrix showing which instances are actually running
+the same content. Copies are rewritten on the way in so each instance records to
+its own folder and no stream key is duplicated by accident.
+
+**HTML sources.** A shared asset library served over loopback HTTP to every
+instance, with live reload: edit an overlay and every browser source showing it
+refreshes. One file can render differently per instance, and a browser source
+can be pushed into any subset of the fleet in one action.
+
+---
+
+## Requirements
+
+- OBS Studio 30.2 or newer (obs-websocket 5.x is bundled with it)
+- Node.js 20+ to build from source
+- Windows 10/11, macOS 12+, or a Linux desktop
+
+---
+
+## Getting started
+
+```bash
+npm install
+npm run dev
+```
+
+On first run OBS Fleet looks for an OBS installation, creates a workspace under
+`~/OBS Fleet`, and starts the asset server. Then:
+
+1. **Settings** — confirm the detected OBS installation, or add one manually.
+2. **Instances → New instance** — name it, choose how many, and pick what to
+   seed from (empty, your existing OBS config, or a copy of another instance).
+3. **Dashboard → Launch all** — the fleet starts in order.
+
+To build a distributable:
+
+```bash
+npm run dist          # for the current platform
+npm run dist:win      # or :mac / :linux
+```
+
+---
+
+## How instances are isolated
+
+This is the part that decides whether multi-instance works at all, so it is
+worth understanding. OBS resolves its configuration directory differently on
+each platform, and OBS Fleet uses whichever mechanism that platform actually
+supports.
+
+| Platform | Strategy | Mechanism |
+| --- | --- | --- |
+| Windows | Portable (linked) — *default* | Directory junctions to `bin`, `data` and `obs-plugins` in the real install, plus `--portable`. Costs almost no disk space and needs no administrator rights. |
+| Windows | Portable (full copy) | A complete copy of the OBS installation per instance. Uses several hundred MB each, but survives the base install being upgraded or removed. |
+| macOS | Redirected `HOME` | The shared app bundle is launched with a per-instance `HOME`, which is where macOS builds look for Application Support. |
+| Linux | `XDG_CONFIG_HOME` | The shared binary is launched with a per-instance `XDG_CONFIG_HOME`, which is what libobs reads. |
+
+Portable mode is only compiled into Windows builds of OBS (`ENABLE_PORTABLE_CONFIG`
+is off in the official macOS and Linux builds), which is why the environment
+variable approach is used on those platforms rather than `--portable`.
+
+Every instance is launched with `--multi`, which is what stops OBS showing the
+"OBS is already running" dialog for each instance after the first.
+
+An instance folder looks like this:
+
+```
+<workspace>/instances/<name>/
+  instance.json           metadata marker
+  obs/                    Windows only: junction farm or copy of the install
+    bin/  data/  obs-plugins/
+    config/obs-studio/    portable OBS configuration
+  config/obs-studio/      Linux/macOS: configuration reached via the environment
+  recordings/             this instance's recording output
+  assets/                 per-instance local files
+```
+
+---
+
+## Control connection
+
+Each instance gets a unique obs-websocket port (from `basePort`, default 4456)
+and its own randomly generated password. Both are written into the instance's
+`plugin_config/obs-websocket/config.json` and passed on the command line —
+the CLI flags alone cannot *enable* a disabled server, so the config file has to
+be right before the first launch.
+
+Ports bind to loopback only. Nothing OBS Fleet runs is reachable from the
+network.
+
+---
+
+## A few deliberate behaviours
+
+**Quitting the client leaves the instances running.** A production team's
+instances are frequently on air, and closing a control surface must never take
+the show down. On the next start, OBS Fleet probes each instance's port,
+reconnects to whatever is still up, and resolves its process so it can still be
+stopped cleanly.
+
+**Bulk launches are staggered, bulk transport actions are simultaneous.**
+Several OBS instances initialising a GPU encoder at the same instant routinely
+fail with "failed to start encoder", so launches are serialised. Pressing record
+across eight ISO instances, on the other hand, should land within a frame of
+each other, so those go out in parallel.
+
+**Frame-drop health is measured over a window, not a lifetime.** A show that
+dropped 400 frames an hour ago is healthy now; lifetime ratios would keep it red
+for the rest of the session.
+
+**Sync repoints recording output.** Copying a profile to five instances without
+rewriting its output path would have all five recording into the same directory
+with the same filename pattern, overwriting each other's takes. That rewrite is
+on by default, along with clearing stream keys and regenerating source UUIDs.
+
+**"Identical" means identical content, not identical bytes.** The consistency
+matrix compares a canonical form with the per-instance fields (recording paths,
+display names, UUIDs, stream keys) excluded, so two instances running the same
+show compare equal even though their files necessarily differ.
+
+**Killing an instance is a last resort.** Stop asks OBS to close cleanly and
+only escalates after a timeout, because a killed OBS leaves its log unterminated
+and greets you with the Safe Mode prompt on the next launch.
+
+---
+
+## HTML overlays
+
+Files in `<workspace>/assets/` are served at `http://127.0.0.1:4599`. Serving
+over HTTP rather than referencing `file://` is what makes query strings, live
+reload and per-instance variation work inside OBS's embedded browser.
+
+Every served HTML page gets two things injected:
+
+```js
+// Which instance is rendering this page
+window.OBSFleet = { instance, instanceId, role, color }
+```
+
+...and a live-reload client, so editing the file on disk refreshes every browser
+source showing it.
+
+The whole fleet is also discoverable from an overlay:
+
+```js
+const { instances } = await (await fetch('/__fleet/instances.json')).json()
+```
+
+which is enough to build a tally wall or a fleet-wide status overlay from a
+single file.
+
+---
+
+## Window layout
+
+OBS Fleet drives your window manager rather than trying to reparent OBS windows
+into itself. Embedding another process's top-level window is fragile on every
+platform and breaks OBS's own previews and dialogs; driving the window manager
+keeps every OBS window fully interactive.
+
+- **Windows** — PowerShell and the Win32 window API. No extra setup.
+- **macOS** — AppleScript. macOS asks for Accessibility permission the first
+  time a window is moved.
+- **Linux** — `wmctrl` (`sudo apt install wmctrl`). X11 only; wmctrl does not
+  work under Wayland.
+
+---
+
+## Development
+
+```bash
+npm run dev         # hot-reloading development build
+npm run typecheck   # main + renderer
+npm run test        # unit and filesystem integration tests
+npm run build       # production build into out/
+```
+
+A headless boot check, used in CI, starts the app, loads the renderer and exits
+with a status code:
+
+```bash
+OBSFLEET_SMOKE_TEST=1 xvfb-run -a npx electron --no-sandbox .
+```
+
+### Layout
+
+```
+src/
+  main/           Electron main process
+    services/     supervisor, launcher, provisioning, sync, telemetry, ...
+    util/         ini parsing, filesystem, process and network helpers
+    ipc/          typed IPC handlers
+  preload/        the context-isolated bridge
+  renderer/       React UI
+  shared/         types and the IPC contract shared by all three
+tests/            vitest suites
+```
+
+The renderer has no Node access. Every capability it has is an explicit method
+on the `FleetApi` interface in `src/shared/api.ts`, implemented in
+`src/main/ipc/handlers.ts` and forwarded by the preload bridge.
+
+---
+
+## Licence
+
+GPL-2.0-or-later, matching OBS Studio. See [LICENSE](LICENSE).
+
+OBS Fleet is not affiliated with or endorsed by the OBS Project.

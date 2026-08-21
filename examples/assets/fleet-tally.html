@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fleet tally wall</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .wall { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; padding: 24px; }
+      .tally {
+        min-width: 180px;
+        padding: 14px 18px;
+        border-radius: 6px;
+        border-left: 6px solid var(--color, #4f9dff);
+        background: rgba(10, 14, 20, 0.86);
+      }
+      .tally[data-self='true'] { outline: 2px solid #fff; }
+      .name { font-size: 22px; font-weight: 650; }
+      .role { font-size: 14px; opacity: 0.68; }
+      .empty { opacity: 0.5; font-size: 16px; }
+    </style>
+  </head>
+  <body>
+    <div class="wall" id="wall"><span class="empty">Loading fleet…</span></div>
+
+    <script>
+      // `window.OBSFleet` is injected by the asset server and describes the
+      // instance rendering this page, so a single file can highlight itself.
+      var self = window.OBSFleet || {}
+
+      async function render() {
+        try {
+          var response = await fetch('/__fleet/instances.json', { cache: 'no-store' })
+          var data = await response.json()
+          var wall = document.getElementById('wall')
+
+          if (!data.instances || data.instances.length === 0) {
+            wall.innerHTML = '<span class="empty">No instances configured</span>'
+            return
+          }
+
+          wall.innerHTML = data.instances
+            .map(function (instance) {
+              var isSelf = instance.id === self.instanceId
+              return (
+                '<div class="tally" style="--color:' + instance.color + '"' +
+                ' data-self="' + isSelf + '">' +
+                '<div class="name">' + escapeHtml(instance.name) + '</div>' +
+                '<div class="role">' + escapeHtml(instance.role || '—') + '</div>' +
+                '</div>'
+              )
+            })
+            .join('')
+        } catch (err) {
+          document.getElementById('wall').innerHTML =
+            '<span class="empty">Fleet unavailable</span>'
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, function (char) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
+        })
+      }
+
+      render()
+      setInterval(render, 5000)
+    </script>
+  </body>
+</html>

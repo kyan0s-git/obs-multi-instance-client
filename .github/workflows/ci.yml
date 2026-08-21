@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npx electron-vite build
+
+      # Proves the main process, preload bridge and renderer bundle still work
+      # together, which a typecheck alone cannot show.
+      - name: Boot check
+        run: xvfb-run -a npx electron --no-sandbox .
+        env:
+          OBSFLEET_SMOKE_TEST: '1'
