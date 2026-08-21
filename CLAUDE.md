@@ -1,14 +1,8 @@
 # OBS Fleet — working notes for Claude
 
-## Commit authorship — read this before committing
+## Commit authorship
 
-**This is a personal project. Do NOT apply the `github-commit-authorship` skill here.**
-
-That skill mandates `Daniel Lee <danieljwlee87@gmail.com>` as primary author. It
-applies **only to Silvia projects** — **Skyline**, **Supra** and **Parallax**.
-Applying it to a personal repo is wrong, and has had to be undone here already.
-
-Commits in this repo use:
+This is a personal project. Commits here are authored as:
 
 ```
 Author / committer:  kyan0s-git <91159868+kyan0s-git@users.noreply.github.com>
@@ -23,8 +17,17 @@ GIT_COMMITTER_EMAIL="91159868+kyan0s-git@users.noreply.github.com" \
 git commit --author="kyan0s-git <91159868+kyan0s-git@users.noreply.github.com>" -m "..."
 ```
 
+Set the committer environment variables as well as `--author`. Setting only
+`--author` leaves the committer field falling back to global git config, which is
+how a work identity leaks into a personal repo even when the author line looks
+correct.
+
 Do not add a `Co-authored-by:` line for `kyan0s-git` — they are the author, so it
 would be redundant.
+
+This is a settled decision: the `github-commit-authorship` skill should read it
+here and **not** ask again. Work identities belong only to the Silvia repos
+(Skyline, Supra, Parallax) and must never be used here.
 
 ---
 
