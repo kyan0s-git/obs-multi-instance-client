@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BrowserSourceSpec, HtmlAsset } from '@shared/types'
+import type { AssetKind, AssetMountStatus, BrowserSourceSpec, HtmlAsset } from '@shared/types'
 import {
   IconExternal,
+  IconEye,
+  IconEyeOff,
   IconFolder,
   IconLayers,
   IconPlus,
@@ -66,6 +68,9 @@ export default function AssetsView(): JSX.Element {
   const runtimes = useFleet((state) => state.runtimes)
 
   const [serverUrl, setServerUrl] = useState<string | null>(null)
+  const [mounts, setMounts] = useState<AssetMountStatus[]>([])
+  const [kindFilter, setKindFilter] = useState<AssetKind | 'all'>('all')
+  const [search, setSearch] = useState('')
   const [deploying, setDeploying] = useState<HtmlAsset | 'url' | null>(null)
   const [creating, setCreating] = useState(false)
   const [existing, setExisting] = useState<Record<string, Array<{ name: string; url: string }>>>({})
@@ -78,9 +83,19 @@ export default function AssetsView(): JSX.Element {
     [workspace, runtimes]
   )
 
+  const reloadMounts = async (): Promise<void> => {
+    const result = await guard('Read asset folders', () => window.fleet.listAssetMounts())
+    if (result) setMounts(result)
+  }
+
   useEffect(() => {
     void window.fleet.assetServerUrl().then(setServerUrl)
-  }, [workspace?.settings.assetServerPort, workspace?.settings.assetServerEnabled])
+    void reloadMounts()
+  }, [
+    workspace?.settings.assetServerPort,
+    workspace?.settings.assetServerEnabled,
+    workspace?.settings.assetMounts
+  ])
 
   const scanExisting = async (): Promise<void> => {
     const result: Record<string, Array<{ name: string; url: string }>> = {}
@@ -91,8 +106,20 @@ export default function AssetsView(): JSX.Element {
     setExisting(result)
   }
 
-  const htmlAssets = assets.filter((asset) => /\.html?$/i.test(asset.name))
-  const otherAssets = assets.filter((asset) => !/\.html?$/i.test(asset.name))
+  const visible = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    return assets
+      .filter((asset) => kindFilter === 'all' || asset.kind === kindFilter)
+      .filter((asset) => needle === '' || asset.relPath.toLowerCase().includes(needle))
+      // HTML first: it is what most operators are looking for.
+      .sort((a, b) => {
+        if (a.kind === b.kind) return a.relPath.localeCompare(b.relPath)
+        return a.kind === 'html' ? -1 : b.kind === 'html' ? 1 : a.kind.localeCompare(b.kind)
+      })
+  }, [assets, kindFilter, search])
+
+  const mountName = (id: string): string =>
+    mounts.find((mount) => mount.id === id)?.name ?? id
 
   return (
     <>
@@ -102,6 +129,8 @@ export default function AssetsView(): JSX.Element {
           check whether its port is already taken.
         </Callout>
       )}
+
+      <MountsPanel mounts={mounts} onChanged={setMounts} />
 
       <Panel
         title="Shared asset library"
@@ -143,6 +172,33 @@ export default function AssetsView(): JSX.Element {
         }
         flush
       >
+        <div
+          className="panel__body row row--wrap"
+          style={{ gap: 8, borderBottom: '1px solid var(--line)' }}
+        >
+          <div className="btn-group">
+            {(['all', 'html', 'image', 'video', 'audio', 'script', 'font'] as const).map((kind) => (
+              <button
+                key={kind}
+                className={`btn btn--sm ${kindFilter === kind ? 'btn--primary' : ''}`}
+                onClick={() => setKindFilter(kind)}
+              >
+                {kind}
+              </button>
+            ))}
+          </div>
+          <input
+            className="input"
+            style={{ width: 220 }}
+            placeholder="Filter by path…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <div className="spacer" />
+          <span className="faint num">
+            {visible.length} of {assets.length}
+          </span>
+        </div>
         {assets.length === 0 ? (
           <Empty title="The library is empty">
             Drop HTML overlays, images or video into the workspace <code>assets/</code> folder, or
@@ -155,6 +211,8 @@ export default function AssetsView(): JSX.Element {
               <thead>
                 <tr>
                   <th>File</th>
+                  <th>Folder</th>
+                  <th>Kind</th>
                   <th>Size</th>
                   <th>Modified</th>
                   <th>Placeholders</th>
@@ -162,13 +220,21 @@ export default function AssetsView(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {[...htmlAssets, ...otherAssets].map((asset) => (
+                {visible.map((asset) => (
                   <tr key={asset.id}>
                     <td>
                       <span className="row" style={{ gap: 7 }}>
-                        {/\.html?$/i.test(asset.name) && <IconLayers size={13} />}
-                        <span>{asset.relPath}</span>
+                        {asset.kind === 'html' && <IconLayers size={13} />}
+                        <span className="truncate" style={{ maxWidth: 320 }} title={asset.absPath}>
+                          {asset.relPath}
+                        </span>
                       </span>
+                    </td>
+                    <td className="faint truncate" style={{ maxWidth: 140 }}>
+                      {mountName(asset.mountId)}
+                    </td>
+                    <td className="faint mono" style={{ fontSize: 11 }}>
+                      {asset.kind}
                     </td>
                     <td className="num faint">{formatBytes(asset.sizeBytes)}</td>
                     <td className="faint">{formatRelative(asset.modifiedAt)}</td>
@@ -177,13 +243,26 @@ export default function AssetsView(): JSX.Element {
                     </td>
                     <td>
                       <div className="btn-group">
-                        <button
-                          className="btn btn--sm"
-                          disabled={connected.length === 0 || !serverUrl}
-                          onClick={() => setDeploying(asset)}
-                        >
-                          Add to instances
-                        </button>
+                        {asset.kind === 'html' ? (
+                          <button
+                            className="btn btn--sm"
+                            disabled={connected.length === 0 || !serverUrl}
+                            onClick={() => setDeploying(asset)}
+                          >
+                            Add to instances
+                          </button>
+                        ) : (
+                          <button
+                            className="btn btn--sm"
+                            title="Copy this file's URL to paste into an OBS source"
+                            onClick={() => {
+                              void navigator.clipboard.writeText(asset.url)
+                              toast('success', 'URL copied', asset.url)
+                            }}
+                          >
+                            Copy URL
+                          </button>
+                        )}
                         <button
                           className="btn btn--sm btn--ghost"
                           title="Open in your browser"
@@ -297,6 +376,153 @@ export default function AssetsView(): JSX.Element {
 
       {creating && <CreateOverlayDialog onClose={() => setCreating(false)} />}
     </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Attached folders                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Folders published to every instance.
+ *
+ * Attaching an existing media library beats copying it into the workspace: a
+ * b-roll or sting archive can be hundreds of gigabytes, and every instance can
+ * reach it over the same loopback URL without a second copy on disk.
+ */
+function MountsPanel({
+  mounts,
+  onChanged
+}: {
+  mounts: AssetMountStatus[]
+  onChanged: (next: AssetMountStatus[]) => void
+}): JSX.Element {
+  const [busy, setBusy] = useState(false)
+
+  const act = async (label: string, action: () => Promise<AssetMountStatus[]>): Promise<void> => {
+    setBusy(true)
+    const result = await guard(label, action)
+    setBusy(false)
+    if (result) onChanged(result)
+  }
+
+  return (
+    <Panel
+      title="Attached folders"
+      actions={
+        <button
+          className="btn btn--sm"
+          disabled={busy}
+          onClick={() => void act('Attach folder', () => window.fleet.addAssetMount())}
+        >
+          <IconPlus size={12} /> Attach folder
+        </button>
+      }
+      flush
+    >
+      <div className="table__scroll" style={{ maxHeight: 260 }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Path</th>
+              <th>Served at</th>
+              <th>Files</th>
+              <th>Size</th>
+              <th>Live reload</th>
+              <th style={{ width: 90 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {mounts.map((mount) => (
+              <tr key={mount.id}>
+                <td>
+                  <span className="row" style={{ gap: 7 }}>
+                    <IconFolder size={13} />
+                    {mount.name}
+                    {mount.builtIn && <Chip>built in</Chip>}
+                    {!mount.enabled && <Chip tone="warn">disabled</Chip>}
+                  </span>
+                </td>
+                <td className="faint mono truncate" style={{ maxWidth: 280 }} title={mount.path}>
+                  {mount.path}
+                </td>
+                <td className="mono faint">{mount.urlPrefix}</td>
+                <td className="num">
+                  {mount.error ? '—' : mount.fileCount}
+                  {mount.truncated && (
+                    <span className="faint" title={`Only the first ${mount.fileCount} files are listed`}>
+                      +
+                    </span>
+                  )}
+                </td>
+                <td className="num faint">{mount.error ? '—' : formatBytes(mount.totalBytes)}</td>
+                <td>
+                  <Check
+                    checked={mount.watch}
+                    disabled={mount.builtIn || busy}
+                    onChange={(watch) =>
+                      void act('Update folder', () =>
+                        window.fleet.updateAssetMount(mount.id, { watch })
+                      )
+                    }
+                    label=""
+                  />
+                </td>
+                <td>
+                  {!mount.builtIn && (
+                    <div className="btn-group">
+                      <button
+                        className="btn btn--sm btn--ghost"
+                        title={mount.enabled ? 'Stop publishing this folder' : 'Publish this folder'}
+                        disabled={busy}
+                        onClick={() =>
+                          void act('Update folder', () =>
+                            window.fleet.updateAssetMount(mount.id, { enabled: !mount.enabled })
+                          )
+                        }
+                      >
+                        {mount.enabled ? <IconEyeOff size={12} /> : <IconEye size={12} />}
+                      </button>
+                      <button
+                        className="btn btn--sm btn--ghost"
+                        title="Detach this folder"
+                        disabled={busy}
+                        onClick={() =>
+                          void act('Detach folder', () =>
+                            window.fleet.removeAssetMount(mount.id)
+                          )
+                        }
+                      >
+                        <IconTrash size={12} />
+                      </button>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {mounts.some((mount) => mount.error) && (
+        <div className="panel__body" style={{ paddingTop: 10 }}>
+          {mounts
+            .filter((mount) => mount.error)
+            .map((mount) => (
+              <Callout key={mount.id} tone="danger" title={mount.name}>
+                {mount.error}
+              </Callout>
+            ))}
+        </div>
+      )}
+
+      <div className="panel__body field__hint" style={{ paddingTop: 10 }}>
+        Attached folders are served read-only over loopback, so images, audio, video and scripts
+        are reachable from every instance at one URL. Live reload is off by default for attached
+        folders — watching a large media library costs file handles for files that rarely change.
+      </div>
+    </Panel>
   )
 }
 

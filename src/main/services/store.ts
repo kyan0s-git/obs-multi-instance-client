@@ -69,11 +69,19 @@ export class Store extends EventEmitter {
     )
   }
 
+  /**
+   * A defensive copy of the whole workspace.
+   *
+   * `structuredClone` on every instance is not free, so this is only called
+   * when the state actually crosses the IPC boundary — not on every internal
+   * mutation. Internal callers use the `get*` accessors, which hand back live
+   * references.
+   */
   getState(): WorkspaceState {
     return {
-      settings: { ...this.settings, multiview: { ...this.settings.multiview }, thresholds: { ...this.settings.thresholds } },
-      installs: this.installs.map((i) => ({ ...i })),
-      instances: this.instances.map((i) => structuredClone(i))
+      settings: structuredClone(this.settings),
+      installs: this.installs.map((install) => ({ ...install })),
+      instances: this.instances.map((instance) => structuredClone(instance))
     }
   }
 
@@ -221,7 +229,7 @@ export class Store extends EventEmitter {
       } catch (err) {
         log.error('store', `Failed to save workspace: ${errorMessage(err)}`)
       }
-      this.emit('changed', this.getState())
+      this.emit('changed')
     })
     return this.saveChain
   }

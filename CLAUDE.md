@@ -46,7 +46,8 @@ design decisions.
 ```bash
 npm run dev         # hot-reloading development build
 npm run typecheck   # main (tsconfig.node.json) + renderer (tsconfig.web.json)
-npm test            # vitest: launch args, tiling, ini, health, sync
+npm test            # vitest: launch args, tiling, ini, health, sync,
+                    #         zip, bundle, ui-layout, hash-cache, asset-server
 npm run build       # typecheck + electron-vite build into out/
 npm run dist        # packaged installer for the current platform
 ```
@@ -67,8 +68,9 @@ the IPC contract. A typecheck alone cannot show that those three still agree.
 src/
   main/           Electron main process
     services/     supervisor (orchestrator), launcher, provision, sync,
-                  telemetry, obs-* (websocket), window-control, asset-server
-    util/         ini, fsx, net, process, async, logger
+                  ui-layout, bundle, telemetry, obs-* (websocket),
+                  window-control, asset-server
+    util/         ini, fsx, zip, hash-cache, net, process, async, logger
     ipc/          typed handlers, checked against FleetApi
   preload/        the context-isolated bridge
   renderer/       React UI (views/ is one file per nav item)
@@ -110,9 +112,29 @@ the same filename pattern, overwriting each other's takes. Covered by
 `tests/sync.test.ts`.
 
 **Sync comparison is canonical, not byte-wise.** Every copy is normalised on the
-way in, so raw hashes would never match. `canonicalProfileHash` /
-`canonicalCollectionHash` exclude exactly the fields sync is meant to rewrite
-(recording paths, display names, UUIDs, stream keys).
+way in, so raw hashes would never match. The transforms in `sync.ts`
+(`BASIC_INI_TRANSFORM`, `COLLECTION_TRANSFORM`) exclude exactly the fields sync
+is meant to rewrite: recording paths, display names, UUIDs, stream keys.
+
+**Digests go through `hashCache`, keyed by size + mtime.** Never call
+`hashFile`/`hashTree` directly in a path the Sync page hits — the matrix hashes
+every asset of every instance on each refresh. After writing to an instance,
+call `hashCache.invalidate(path)`; `applySync` already does.
+
+**Import reuses the sync pipeline.** `bundle.ts` stages a bundle into a temp
+folder shaped like an instance, then calls `planSync`/`applySync` against it.
+Do not add a second copy-and-rewrite path — the per-instance rewrites have to
+apply to imported configuration too.
+
+**The zip implementation is ours.** `util/zip.ts` is a dependency-free
+store+deflate ZIP writer/reader. It is not ZIP64: 4 GB and 65535 entries are
+hard caps, checked and reported. `tests/zip.test.ts` cross-checks it against the
+system `unzip`, so keep that test passing if you touch the format.
+
+**Asset paths are untrusted twice over.** The asset server resolves requests
+against a mount root and refuses anything escaping it; bundle import checks
+archive paths both before and after resolution. Both guards exist because the
+input can come from a crafted URL or someone else's bundle.
 
 **The preload is `.mjs`, not `.js`.** The package is `type: module`, so
 electron-vite emits ESM, and Electron loads an ESM preload only with
@@ -121,6 +143,22 @@ electron-vite emits ESM, and Electron loads an ESM preload only with
 **Quitting leaves instances running, on purpose.** Instances are frequently on
 air; closing the control surface must not take the show down. Startup probes
 each instance's port and re-adopts whatever is still up.
+
+## Performance expectations
+
+The client polls a lot, so these patterns are load-bearing rather than
+decorative:
+
+- Preview frames are emitted as one batch per tick and dropped when identical
+  to the last frame sent for that instance.
+- The renderer store coalesces `set()` into one microtask notification; log
+  entries buffer for 100ms before they land. Do not notify synchronously.
+- OBS stdout/stderr is rate limited per instance, except for lines matching the
+  fault pattern.
+- `si.graphics()` (nvidia-smi) and `si.fsSize()` are throttled, and overlapping
+  system samples are skipped rather than queued.
+- Asset listings are cached per mount and invalidated by the watcher, capped at
+  `MAX_FILES_PER_MOUNT`.
 
 ## Style
 

@@ -13,18 +13,23 @@ import type {
 } from '@shared/types'
 import {
   copyTree,
-  dirSize,
   ensureDir,
-  hashFile,
   pathExists,
   readJson,
   writeJsonAtomic,
   writeTextAtomic
 } from '../util/fsx.js'
+import { hashCache } from '../util/hash-cache.js'
 import { iniGet, iniSet, parseIni, serializeIni, type IniDocument } from '../util/ini.js'
 import { log, errorMessage } from '../util/logger.js'
-import { instancePaths } from './paths.js'
-import { workspacePaths } from './paths.js'
+import { instancePaths, workspacePaths } from './paths.js'
+import {
+  describeUiLayout,
+  readUiLayout,
+  regenerateDockUuids,
+  writeUiLayout,
+  type UiLayout
+} from './ui-layout.js'
 
 export function defaultTransform(): SyncTransform {
   return {
@@ -32,7 +37,8 @@ export function defaultTransform(): SyncTransform {
     retargetRecordingPath: true,
     stripStreamKey: true,
     tagBrowserSources: false,
-    regenerateUuids: true
+    regenerateUuids: true,
+    includeWindowGeometry: false
   }
 }
 
@@ -52,16 +58,18 @@ export async function readInstanceAssets(
   const paths = instancePaths(instance, install)
 
   try {
-    const [profiles, sceneCollections] = await Promise.all([
+    const [profiles, sceneCollections, uiLayouts] = await Promise.all([
       readProfiles(paths.profilesDir),
-      readSceneCollections(paths.scenesDir)
+      readSceneCollections(paths.scenesDir),
+      readUiLayoutAsset(paths.userIni)
     ])
-    return { instanceId: instance.id, profiles, sceneCollections, error: null }
+    return { instanceId: instance.id, profiles, sceneCollections, uiLayouts, error: null }
   } catch (err) {
     return {
       instanceId: instance.id,
       profiles: [],
       sceneCollections: [],
+      uiLayouts: [],
       error: errorMessage(err)
     }
   }
@@ -85,14 +93,18 @@ async function readProfiles(profilesDir: string): Promise<SyncAsset[]> {
     }
 
     const stat = await fs.stat(dir)
+    // One walk produces both the digest and the size; the cache means an
+    // unchanged profile costs a stat per file rather than a full read.
+    const walked = await hashCache.tree(dir, { transformFor: profileTransformFor })
+
     assets.push({
       kind: 'profile',
       name: displayName,
       slug: entry.name,
       path: dir,
-      sizeBytes: await dirSize(dir),
+      sizeBytes: walked.totalBytes,
       modifiedAt: stat.mtimeMs,
-      hash: await canonicalProfileHash(dir)
+      hash: walked.digest
     })
   }
 
@@ -118,7 +130,7 @@ async function readSceneCollections(scenesDir: string): Promise<SyncAsset[]> {
       path: file,
       sizeBytes: stat.size,
       modifiedAt: stat.mtimeMs,
-      hash: await canonicalCollectionHash(file)
+      hash: await hashCache.file(file, COLLECTION_TRANSFORM)
     })
   }
 
@@ -152,79 +164,106 @@ const SECRET_SERVICE_KEYS = ['key', 'password', 'bearer_token']
 /** Query parameters the client injects to identify the rendering instance. */
 const INSTANCE_QUERY_PARAMS = ['instance', 'instanceId', 'role', 'color']
 
-/** Content hash of a profile folder, ignoring per-instance fields. */
-async function canonicalProfileHash(dir: string): Promise<string> {
-  const hash = createHash('sha1')
-  const entries: string[] = []
-
-  async function walk(current: string, rel: string): Promise<void> {
-    const names = await fs.readdir(current).catch(() => [] as string[])
-    for (const name of names.sort()) {
-      const abs = path.join(current, name)
-      const childRel = rel === '' ? name : `${rel}/${name}`
-      const stat = await fs.lstat(abs).catch(() => null)
-      if (!stat) continue
-
-      if (stat.isDirectory()) {
-        await walk(abs, childRel)
-        continue
-      }
-      if (!stat.isFile()) continue
-
-      entries.push(`${childRel}:${await canonicalFileDigest(abs, childRel)}`)
-    }
-  }
-
-  await walk(dir, '')
-  for (const entry of entries) hash.update(`${entry}\n`)
-  return hash.digest('hex')
+/**
+ * Chooses how each file inside a profile is digested.
+ *
+ * `undefined` means "hash the raw bytes", which is right for everything that
+ * has no per-instance content.
+ */
+function profileTransformFor(
+  relPath: string
+): { key: string; apply: (raw: Buffer) => string | Buffer } | undefined {
+  if (relPath === 'basic.ini') return BASIC_INI_TRANSFORM
+  if (relPath === 'service.json') return SERVICE_JSON_TRANSFORM
+  return undefined
 }
 
-async function canonicalFileDigest(file: string, rel: string): Promise<string> {
-  if (rel === 'basic.ini') {
-    const doc = parseIni(await fs.readFile(file, 'utf8').catch(() => ''))
+const BASIC_INI_TRANSFORM = {
+  key: 'basic.ini',
+  apply(raw: Buffer): string {
+    const doc = parseIni(raw.toString('utf8'))
     for (const [section, key] of PROFILE_PER_INSTANCE_KEYS) doc.get(section)?.delete(key)
     // Re-serialising also normalises key order and whitespace, so a profile
     // that only differs in formatting still compares equal.
-    return createHash('sha1').update(serializeIni(doc)).digest('hex')
+    return serializeIni(doc)
   }
+}
 
-  if (rel === 'service.json') {
-    const service = (await readJson<Record<string, unknown>>(file)) ?? {}
+const SERVICE_JSON_TRANSFORM = {
+  key: 'service.json',
+  apply(raw: Buffer): string {
+    let service: Record<string, unknown>
+    try {
+      service = JSON.parse(raw.toString('utf8')) as Record<string, unknown>
+    } catch {
+      // Unparseable: fall back to the raw text rather than claiming a match.
+      return raw.toString('utf8')
+    }
     const settings = service.settings as Record<string, unknown> | undefined
     if (settings) for (const key of SECRET_SERVICE_KEYS) delete settings[key]
-    return createHash('sha1').update(stableStringify(service)).digest('hex')
+    return stableStringify(service)
   }
-
-  return hashFile(file)
 }
 
-/** Content hash of a scene collection, ignoring per-instance identity. */
-async function canonicalCollectionHash(file: string): Promise<string> {
-  const collection = await readJson<Record<string, unknown>>(file)
-  // Not parseable as JSON: fall back to raw bytes rather than claiming a match.
-  if (!collection) return hashFile(file)
+/** Digest of a scene collection with per-instance identity removed. */
+const COLLECTION_TRANSFORM = {
+  key: 'scene-collection',
+  apply(raw: Buffer): string {
+    let collection: Record<string, unknown>
+    try {
+      collection = JSON.parse(raw.toString('utf8')) as Record<string, unknown>
+    } catch {
+      return raw.toString('utf8')
+    }
 
-  const clone = structuredClone(collection)
-  // The display name is always retargeted on copy.
-  delete clone.name
+    // The display name is always retargeted on copy.
+    delete collection.name
 
-  const sources = clone.sources
-  if (Array.isArray(sources)) {
-    for (const raw of sources) {
-      const source = raw as Record<string, unknown>
-      // UUIDs are regenerated per copy by design.
-      delete source.uuid
+    const sources = collection.sources
+    if (Array.isArray(sources)) {
+      for (const entry of sources) {
+        const source = entry as Record<string, unknown>
+        // UUIDs are regenerated per copy by design.
+        delete source.uuid
 
-      const settings = source.settings as Record<string, unknown> | undefined
-      if (settings && typeof settings.url === 'string') {
-        settings.url = stripInstanceParams(settings.url)
+        const settings = source.settings as Record<string, unknown> | undefined
+        if (settings && typeof settings.url === 'string') {
+          settings.url = stripInstanceParams(settings.url)
+        }
       }
     }
-  }
 
-  return createHash('sha1').update(stableStringify(clone)).digest('hex')
+    return stableStringify(collection)
+  }
 }
+
+/**
+ * The saved window arrangement, exposed as a single synthetic asset so it
+ * appears in the same matrix and plan flow as profiles and collections.
+ */
+async function readUiLayoutAsset(userIni: string): Promise<SyncAsset[]> {
+  const layout = await readUiLayout(userIni)
+  if (!layout) return []
+
+  const stat = await fs.stat(userIni).catch(() => null)
+  const canonical = stableStringify(layout.values)
+
+  return [
+    {
+      kind: 'uiLayout',
+      name: describeUiLayout(layout),
+      // There is only ever one layout per instance, so the slug is fixed.
+      slug: UI_LAYOUT_SLUG,
+      path: userIni,
+      sizeBytes: Buffer.byteLength(canonical),
+      modifiedAt: stat?.mtimeMs ?? 0,
+      hash: createHash('sha1').update(canonical).digest('hex')
+    }
+  ]
+}
+
+/** There is exactly one UI layout per instance. */
+export const UI_LAYOUT_SLUG = 'window-layout'
 
 /** Removes the instance-identifying query parameters from a browser URL. */
 function stripInstanceParams(url: string): string {
@@ -259,8 +298,10 @@ export interface PlanRequest {
   /** Asset slugs to copy, by kind. */
   profiles: string[]
   sceneCollections: string[]
+  /** Copy the source's window/dock arrangement to each target. */
+  uiLayout: boolean
   transform: SyncTransform
-  /** Skip targets whose copy is already byte-identical. */
+  /** Skip targets whose copy is already identical. */
   skipIdentical: boolean
 }
 
@@ -323,6 +364,27 @@ export async function planSync(
           ? path.join(backupRoot, target.instance.name, 'profiles', targetSlug)
           : null
       })
+    }
+
+    if (request.uiLayout) {
+      const asset = sourceAssets.uiLayouts[0]
+      if (!asset) {
+        warnings.push(
+          'The source instance has no saved window layout yet. Open it in OBS, arrange the docks, then close it so OBS writes the layout out.'
+        )
+      } else {
+        const existing = targetAssets.uiLayouts[0]
+        items.push({
+          kind: 'uiLayout',
+          sourceInstanceId: request.sourceInstanceId,
+          targetInstanceId: targetId,
+          assetName: asset.name,
+          targetName: asset.name,
+          targetPath: targetPaths.userIni,
+          action: resolveAction(existing?.hash, asset.hash, request.skipIdentical, request.transform),
+          backupPath: existing ? path.join(backupRoot, target.instance.name, 'user.ini') : null
+        })
+      }
     }
 
     for (const slug of request.sceneCollections) {
@@ -413,9 +475,14 @@ export async function applySync(
 
       if (item.kind === 'profile') {
         await syncProfile(item, source, target, transform)
+      } else if (item.kind === 'uiLayout') {
+        await syncUiLayout(item, source, target, transform)
       } else {
         await syncSceneCollection(item, source, target, transform)
       }
+
+      // The target's files just changed underneath the digest cache.
+      hashCache.invalidate(item.targetPath)
 
       applied.push(item)
       log.info(
@@ -520,6 +587,33 @@ async function stripStreamKey(serviceFile: string): Promise<void> {
     if (key in service.settings) service.settings[key] = ''
   }
   await writeJsonAtomic(serviceFile, service)
+}
+
+/**
+ * Copies the window and dock arrangement into the target's `user.ini`.
+ *
+ * Only the `[BasicWindow]` keys that describe layout are touched — the rest of
+ * the target's user config (its active profile, its first-run flag) is left
+ * exactly as it was, because overwriting those would repoint the instance at a
+ * profile it may not have.
+ */
+async function syncUiLayout(
+  item: SyncPlanItem,
+  source: { instance: ObsInstance; install: ObsInstall },
+  target: { instance: ObsInstance; install: ObsInstall },
+  transform: SyncTransform
+): Promise<void> {
+  const sourcePaths = instancePaths(source.instance, source.install)
+  const layout = await readUiLayout(sourcePaths.userIni)
+  if (!layout) throw new Error('The source instance has no saved window layout')
+
+  // Custom browser docks are keyed by uuid in OBS's own persisted state, so
+  // two instances sharing one would fight over the same dock geometry.
+  const prepared: UiLayout = transform.regenerateUuids ? regenerateDockUuids(layout) : layout
+
+  await writeUiLayout(item.targetPath, prepared, {
+    includeGeometry: transform.includeWindowGeometry
+  })
 }
 
 async function syncSceneCollection(

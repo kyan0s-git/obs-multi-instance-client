@@ -171,6 +171,7 @@ describe('planSync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Show'],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: true
       },
@@ -189,6 +190,7 @@ describe('planSync', () => {
         targetInstanceIds: [source.id, target.id],
         profiles: ['Show'],
         sceneCollections: [],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: true
       },
@@ -206,6 +208,7 @@ describe('planSync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Nonexistent'],
         sceneCollections: [],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: true
       },
@@ -226,6 +229,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Show'],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform,
         skipIdentical: false
       },
@@ -342,6 +346,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Show'],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: false
       },
@@ -370,6 +375,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Show'],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: true
       },
@@ -399,6 +405,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: [],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: true
       },
@@ -425,6 +432,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: [],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: defaultTransform(),
         skipIdentical: true
       },
@@ -444,6 +452,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Show'],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: { ...defaultTransform(), pathRewrites: [{ from: '/a', to: '/b' }] },
         skipIdentical: true
       },
@@ -470,6 +479,7 @@ describe('applySync', () => {
         targetInstanceIds: [target.id],
         profiles: ['Show'],
         sceneCollections: ['Show'],
+        uiLayout: false,
         transform: inert,
         skipIdentical: true
       },

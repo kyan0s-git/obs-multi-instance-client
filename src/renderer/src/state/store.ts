@@ -53,10 +53,26 @@ let state: FleetState = {
 }
 
 const listeners = new Set<() => void>()
+let notifyScheduled = false
 
+/**
+ * Applies a patch and schedules a single notification.
+ *
+ * Telemetry, previews, runtime and log events all land in the same tick, and
+ * notifying synchronously on each made React re-render the whole tree several
+ * times per frame. Coalescing into one microtask means a burst of events costs
+ * one render, and `useSyncExternalStore` still sees a consistent snapshot
+ * because `state` is replaced before the notification runs.
+ */
 function set(patch: Partial<FleetState>): void {
   state = { ...state, ...patch }
-  for (const listener of listeners) listener()
+  if (notifyScheduled) return
+
+  notifyScheduled = true
+  queueMicrotask(() => {
+    notifyScheduled = false
+    for (const listener of listeners) listener()
+  })
 }
 
 function subscribe(listener: () => void): () => void {
@@ -172,8 +188,12 @@ export async function initialiseStore(): Promise<() => void> {
   )
 
   unsubscribers.push(
-    window.fleet.on('preview:frame', (frame) => {
-      set({ previews: { ...state.previews, [frame.instanceId]: frame } })
+    window.fleet.on('preview:frames', (frames) => {
+      if (frames.length === 0) return
+      // One object rebuild per batch rather than per instance.
+      const previews = { ...state.previews }
+      for (const frame of frames) previews[frame.instanceId] = frame
+      set({ previews })
     })
   )
 
@@ -183,10 +203,26 @@ export async function initialiseStore(): Promise<() => void> {
     })
   )
 
+  // Log lines arrive one per IPC message. Buffering them into a single state
+  // update per animation frame keeps a burst from re-rendering the log pane
+  // hundreds of times.
+  let logBuffer: LogEntry[] = []
+  let logFlushScheduled = false
+
+  const flushLogs = (): void => {
+    logFlushScheduled = false
+    if (logBuffer.length === 0) return
+    const merged = [...state.logs, ...logBuffer]
+    logBuffer = []
+    set({ logs: merged.length > LOG_WINDOW ? merged.slice(-LOG_WINDOW) : merged })
+  }
+
   unsubscribers.push(
     window.fleet.on('log:entry', (entry) => {
-      const merged = [...state.logs, entry]
-      set({ logs: merged.length > LOG_WINDOW ? merged.slice(-LOG_WINDOW) : merged })
+      logBuffer.push(entry)
+      if (logFlushScheduled) return
+      logFlushScheduled = true
+      setTimeout(flushLogs, 100)
     })
   )
 

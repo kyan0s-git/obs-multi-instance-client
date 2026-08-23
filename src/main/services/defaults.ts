@@ -92,6 +92,8 @@ export function defaultSettings(): WorkspaceSettings {
     thresholds: defaultThresholds(),
     assetServerPort: 4599,
     assetServerEnabled: true,
+    assetMounts: [],
+    logRateLimitPerSecond: 40,
     theme: 'dark',
     confirmDestructive: true
   }
@@ -105,7 +107,8 @@ export function mergeSettings(partial: Partial<WorkspaceSettings> | null): Works
     ...base,
     ...partial,
     multiview: { ...base.multiview, ...(partial.multiview ?? {}) },
-    thresholds: { ...base.thresholds, ...(partial.thresholds ?? {}) }
+    thresholds: { ...base.thresholds, ...(partial.thresholds ?? {}) },
+    assetMounts: Array.isArray(partial.assetMounts) ? partial.assetMounts : base.assetMounts
   }
 }
 

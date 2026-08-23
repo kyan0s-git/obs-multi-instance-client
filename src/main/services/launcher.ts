@@ -21,6 +21,10 @@ interface ManagedProcess {
   /** Set while an intentional quit/kill is in flight, so exit is not a crash. */
   stopping: boolean
   spec: LaunchSpec
+  /** Sliding-window counter for output forwarding. */
+  logWindowStart: number
+  logWindowCount: number
+  logSuppressed: number
 }
 
 export interface LauncherExit {
@@ -115,14 +119,17 @@ export class Launcher extends EventEmitter {
       pid: child.pid,
       startedAt: Date.now(),
       stopping: false,
-      spec
+      spec,
+      logWindowStart: Date.now(),
+      logWindowCount: 0,
+      logSuppressed: 0
     }
     this.processes.set(instance.id, managed)
 
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
-    child.stdout?.on('data', (chunk: string) => this.forwardOutput(instance, chunk, 'debug'))
-    child.stderr?.on('data', (chunk: string) => this.forwardOutput(instance, chunk, 'warn'))
+    child.stdout?.on('data', (chunk: string) => this.forwardOutput(managed, instance, chunk, 'debug'))
+    child.stderr?.on('data', (chunk: string) => this.forwardOutput(managed, instance, chunk, 'warn'))
 
     child.once('error', (err) => {
       log.error('launcher', `Process error: ${errorMessage(err)}`, instance.id)
@@ -249,15 +256,56 @@ export class Launcher extends EventEmitter {
     }
   }
 
+  /** Ceiling on forwarded output lines per second, per instance. */
+  private logRateLimit = 40
+
+  setLogRateLimit(linesPerSecond: number): void {
+    this.logRateLimit = Math.max(1, linesPerSecond)
+  }
+
   /**
    * OBS is chatty on stderr during normal startup; only lines that look like
    * real problems are promoted, the rest go to the debug channel.
+   *
+   * Output is rate limited per instance: an OBS launched with --verbose can
+   * emit thousands of lines a second, and each one otherwise costs a log
+   * entry, an IPC message and a renderer update. Suppressed lines are counted
+   * and reported so the gap is visible rather than silent.
    */
-  private forwardOutput(instance: ObsInstance, chunk: string, level: 'debug' | 'warn'): void {
+  private forwardOutput(
+    managed: ManagedProcess,
+    instance: ObsInstance,
+    chunk: string,
+    level: 'debug' | 'warn'
+  ): void {
     for (const line of chunk.split(/\r?\n/)) {
       const text = line.trim()
       if (text === '') continue
+
+      const now = Date.now()
+      if (now - managed.logWindowStart >= 1000) {
+        if (managed.logSuppressed > 0) {
+          log.write(
+            'warn',
+            `obs:${instance.name}`,
+            `(${managed.logSuppressed} further output line(s) suppressed by the rate limit)`,
+            instance.id
+          )
+        }
+        managed.logWindowStart = now
+        managed.logWindowCount = 0
+        managed.logSuppressed = 0
+      }
+
       const looksBad = /error|failed|fatal|cannot|unable/i.test(text)
+
+      // Never drop something that looks like a real fault.
+      if (managed.logWindowCount >= this.logRateLimit && !looksBad) {
+        managed.logSuppressed += 1
+        continue
+      }
+      managed.logWindowCount += 1
+
       log.write(level === 'warn' && looksBad ? 'warn' : 'debug', `obs:${instance.name}`, text, instance.id)
     }
   }

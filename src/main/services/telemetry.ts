@@ -37,6 +37,9 @@ export class Telemetry extends EventEmitter {
   private intervalMs = 1000
   private historyLength = 300
   private sampling = false
+  private samplingSystem = false
+  /** Disk layout changes rarely; re-probing it every tick is wasted work. */
+  private diskCache: { at: number; disks: DiskStats[] } | null = null
 
   constructor(
     private readonly pool: ObsPool,
@@ -248,15 +251,31 @@ export class Telemetry extends EventEmitter {
   /* ---------------- host sampling ---------------- */
 
   private async sampleSystem(): Promise<void> {
+    // `si.graphics()` shells out to nvidia-smi and `si.fsSize()` stats every
+    // mount; letting these overlap on a busy machine stacks subprocesses.
+    if (this.samplingSystem) return
+    this.samplingSystem = true
+
     try {
+      // Volumes are re-probed at most every 30s. Free space still updates
+      // every tick per instance, straight from OBS's own GetStats.
+      const disksPromise =
+        this.diskCache && Date.now() - this.diskCache.at < 30_000
+          ? Promise.resolve(null)
+          : si.fsSize().catch(() => [] as unknown[])
+
       const [load, mem, graphics, disks, net, temp] = await Promise.all([
         si.currentLoad(),
         si.mem(),
         si.graphics().catch(() => ({ controllers: [] as unknown[] })),
-        si.fsSize().catch(() => [] as unknown[]),
+        disksPromise,
         si.networkStats().catch(() => [] as unknown[]),
         si.cpuTemperature().catch(() => ({ main: null }))
       ])
+
+      if (disks !== null) {
+        this.diskCache = { at: Date.now(), disks: mapDisks(disks as unknown[]) }
+      }
 
       const processStats = await this.sampleProcesses()
       const obsAggregate = [...processStats.values()].reduce(
@@ -276,7 +295,7 @@ export class Telemetry extends EventEmitter {
         memUsedMb: Math.round((mem.total - mem.available) / (1024 * 1024)),
         memTotalMb: Math.round(mem.total / (1024 * 1024)),
         gpus: mapGpus(graphics.controllers as unknown[]),
-        disks: mapDisks(disks as unknown[]),
+        disks: this.diskCache?.disks ?? [],
         network: aggregateNetwork(net as unknown[]),
         obsProcesses: {
           count: obsAggregate.count,
@@ -294,6 +313,8 @@ export class Telemetry extends EventEmitter {
       this.emit('system', sample)
     } catch (err) {
       log.debug('telemetry', `System sample failed: ${errorMessage(err)}`)
+    } finally {
+      this.samplingSystem = false
     }
   }
 }

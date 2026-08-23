@@ -39,15 +39,23 @@ congestion — sampled continuously, charted over time, and turned into a health
 verdict per instance. Host CPU, memory, GPU utilisation and VRAM sit alongside
 them, because on a multi-instance rig the machine is usually the bottleneck.
 
-**Sync.** Copy profiles and scene collections from one instance to any number of
-others, with a consistency matrix showing which instances are actually running
-the same content. Copies are rewritten on the way in so each instance records to
-its own folder and no stream key is duplicated by accident.
+**Sync.** Copy profiles, scene collections and the window/dock arrangement from
+one instance to any number of others, with a consistency matrix showing which
+instances are actually running the same content. Copies are rewritten on the way
+in so each instance records to its own folder and no stream key is duplicated by
+accident.
 
-**HTML sources.** A shared asset library served over loopback HTTP to every
-instance, with live reload: edit an overlay and every browser source showing it
-refreshes. One file can render differently per instance, and a browser source
-can be pushed into any subset of the fleet in one action.
+**Shared assets.** Attach any folder — a b-roll archive, a logo pack, a font
+library — and it is published to every instance over loopback HTTP, with byte
+ranges so media sources can seek. The workspace's own asset folder gets live
+reload on top: edit an overlay and every browser source showing it refreshes.
+One HTML file can render differently per instance, and a browser source can be
+pushed into any subset of the fleet in one action.
+
+**Import and export.** Pack profiles, scene collections, window layouts and the
+asset library into a single zip, hand it to a colleague or archive it with the
+show, and import it back into any instance. Importing runs through the same
+rewrites as a sync, so a restored profile still records to the right folder.
 
 ---
 
@@ -166,11 +174,24 @@ and greets you with the Safe Mode prompt on the next launch.
 
 ---
 
-## HTML overlays
+## Shared assets
 
 Files in `<workspace>/assets/` are served at `http://127.0.0.1:4599`. Serving
 over HTTP rather than referencing `file://` is what makes query strings, live
 reload and per-instance variation work inside OBS's embedded browser.
+
+**Attached folders.** Point the fleet at folders you already have rather than
+copying them into the workspace — a media archive can be hundreds of gigabytes,
+and every instance can reach the same one over loopback without a second copy.
+Attached folders appear under `/m/<id>/` and are served read-only.
+
+Video and audio are served with HTTP range support, so an OBS media source can
+seek without restarting the transfer. Media also gets a real cache policy;
+overlays deliberately do not, because they are edited live.
+
+Live reload is on for the workspace folder and off by default for attached
+folders — recursively watching a large media library costs file handles for
+files that rarely change, and you can turn it on per folder.
 
 Every served HTML page gets two things injected:
 
@@ -186,10 +207,32 @@ The whole fleet is also discoverable from an overlay:
 
 ```js
 const { instances } = await (await fetch('/__fleet/instances.json')).json()
+const { mounts } = await (await fetch('/__fleet/mounts.json')).json()
+
+// Resolve a file in an attached folder without hardcoding its prefix:
+img.src = OBSFleet.asset('media:stings/open.webm')
 ```
 
 which is enough to build a tally wall or a fleet-wide status overlay from a
 single file.
+
+## Bundles
+
+**Sync → Export bundle** packs the fleet's configuration into an ordinary zip:
+
+```
+manifest.json
+sources/<instance>/profiles/<name>/basic.ini
+sources/<instance>/scenes/<name>.json
+sources/<instance>/ui-layout.json
+assets/...                      (optional)
+```
+
+Any zip tool can open it, and the contents are recognisable OBS files rather
+than an opaque blob. Importing stages the bundle into a temporary folder shaped
+like an instance and then runs the ordinary sync pipeline over it, so an
+imported profile gets the same per-instance rewrites — and the same reviewable
+plan and automatic backups — as one copied between two local instances.
 
 ---
 
@@ -205,6 +248,33 @@ keeps every OBS window fully interactive.
   time a window is moved.
 - **Linux** — `wmctrl` (`sudo apt install wmctrl`). X11 only; wmctrl does not
   work under Wayland.
+
+---
+
+## Performance notes
+
+A twelve-instance fleet is a lot of polling, so a few things are deliberate:
+
+- **Digests are cached by size and mtime.** The consistency matrix hashes every
+  profile and scene collection of every instance on each refresh. Caching makes
+  a re-read cost one `stat` per file instead of reading the bytes: measured on a
+  twelve-instance tree, a warm pass holds flat at ~8 ms while a cold pass grows
+  with content — 3.7× faster with 50 KB scene collections, 9.6× with 2 MB ones.
+- **One walk, not two.** Digest and folder size come from the same traversal.
+- **Preview frames are batched and de-duplicated.** Captures are emitted once
+  per tick rather than once per instance, and a frame identical to the last one
+  sent is dropped — a static scene encodes to the same JPEG every time.
+- **Renderer updates are coalesced.** Telemetry, previews, runtime and log
+  events arriving in one tick produce a single React render, and log lines are
+  buffered before they reach the store.
+- **OBS output is rate limited** per instance (configurable), because an OBS
+  launched with `--verbose` can emit thousands of lines a second. Lines that
+  look like faults are never dropped.
+- **Expensive host probes are throttled.** `nvidia-smi` and volume enumeration
+  do not run on every tick, and overlapping samples are skipped rather than
+  stacked.
+- **Asset listings are cached per folder** and invalidated by the watcher, with
+  a cap on how many files a single attached folder contributes.
 
 ---
 

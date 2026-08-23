@@ -21,6 +21,8 @@ export class Multiview extends EventEmitter {
   /** Instances the UI is currently showing; empty means "all connected". */
   private visible: string[] | null = null
   private sceneNames = new Map<string, { program: string | null; preview: string | null }>()
+  /** Last payload sent per instance, so identical frames are not re-sent. */
+  private lastSent = new Map<string, string>()
 
   constructor(private readonly pool: ObsPool) {
     super()
@@ -47,6 +49,20 @@ export class Multiview extends EventEmitter {
 
   forget(instanceId: string): void {
     this.sceneNames.delete(instanceId)
+    this.lastSent.delete(instanceId)
+  }
+
+  /**
+   * Suppresses frames that would tell the renderer nothing new.
+   *
+   * A static scene encodes to a byte-identical JPEG every tick, and pushing
+   * that across IPC costs a copy of the whole image for no visible change.
+   */
+  private retainIfChanged(frame: PreviewFrame): boolean {
+    const signature = frame.dataUri ?? `error:${frame.error ?? ''}`
+    if (this.lastSent.get(frame.instanceId) === signature) return false
+    this.lastSent.set(frame.instanceId, signature)
+    return true
   }
 
   start(): void {
@@ -80,7 +96,12 @@ export class Multiview extends EventEmitter {
 
       // Four at a time keeps a large fleet from stalling on one slow instance.
       const frames = await mapLimit(targets, 4, (id) => this.capture(id))
-      for (const frame of frames) this.emit('frame', frame)
+
+      // Emitted as one batch per tick. At 8 fps across a dozen instances,
+      // per-frame events meant ~100 IPC messages and ~100 renderer store
+      // notifications per second, each carrying a base64 JPEG.
+      const changed = frames.filter((frame) => this.retainIfChanged(frame))
+      if (changed.length > 0) this.emit('frames', changed)
     } finally {
       this.capturing = false
     }

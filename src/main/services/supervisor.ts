@@ -102,6 +102,7 @@ export class Supervisor extends EventEmitter {
     })
     this.telemetry.start()
     this.multiview.configure(settings.multiview)
+    this.launcher.setLogRateLimit(settings.logRateLimitPerSecond)
 
     await this.startAssetServer(settings)
 
@@ -140,7 +141,7 @@ export class Supervisor extends EventEmitter {
     this.assets.setInstancesProvider(() => this.store.getInstances())
 
     try {
-      await this.assets.start(workspace.assets, settings.assetServerPort)
+      await this.assets.start(workspace.assets, settings.assetServerPort, settings.assetMounts)
       this.emit('assets:changed', await this.assets.list())
     } catch (err) {
       log.error(
@@ -155,11 +156,13 @@ export class Supervisor extends EventEmitter {
   /* ------------------------------------------------------------------ */
 
   private wireStore(): void {
-    this.store.on('changed', (state) => {
+    this.store.on('changed', () => {
       // Keep a runtime record for every instance, and drop records for ones
-      // that were deleted.
-      const ids = new Set(state.instances.map((instance: ObsInstance) => instance.id))
-      for (const instance of state.instances as ObsInstance[]) {
+      // that were deleted. Live references are enough here; only the payload
+      // that crosses IPC needs a defensive copy.
+      const instances = this.store.getInstances()
+      const ids = new Set(instances.map((instance) => instance.id))
+      for (const instance of instances) {
         if (!this.runtime.has(instance.id)) this.runtime.set(instance.id, blankRuntime(instance.id))
       }
       for (const id of [...this.runtime.keys()]) {
@@ -172,7 +175,7 @@ export class Supervisor extends EventEmitter {
         }
       }
 
-      this.emit('workspace:changed', state)
+      this.emit('workspace:changed', this.store.getState())
       this.broadcastRuntime()
     })
   }
@@ -217,7 +220,7 @@ export class Supervisor extends EventEmitter {
   }
 
   private wireMultiview(): void {
-    this.multiview.on('frame', (frame) => this.emit('preview:frame', frame))
+    this.multiview.on('frames', (frames) => this.emit('preview:frames', frames))
   }
 
   private wireAssets(): void {
@@ -793,6 +796,9 @@ export class Supervisor extends EventEmitter {
     }
 
     if (patch.multiview) this.multiview.configure(settings.multiview)
+    if (patch.logRateLimitPerSecond !== undefined) {
+      this.launcher.setLogRateLimit(settings.logRateLimitPerSecond)
+    }
 
     const assetServerChanged =
       patch.assetServerEnabled !== undefined ||
@@ -803,6 +809,11 @@ export class Supervisor extends EventEmitter {
       await this.assets.stop()
       await this.ensureWorkspace()
       await this.startAssetServer(settings)
+    } else if (patch.assetMounts !== undefined && this.assets.isRunning) {
+      // Mounts can be reconciled in place, so adding a media folder does not
+      // interrupt overlays that are currently on air.
+      await this.assets.setMounts(workspacePaths(settings.root).assets, settings.assetMounts)
+      this.emit('assets:changed', await this.assets.list())
     }
 
     return settings

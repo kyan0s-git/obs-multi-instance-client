@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain, screen, shell } from 'electron'
 import {
   API_METHODS,
   IPC_EVENT_CHANNEL,
@@ -11,6 +11,7 @@ import {
   type LaunchPreview
 } from '@shared/api'
 import type { IpcEventName, IpcEvents, InstanceAssets } from '@shared/types'
+import { randomUUID } from 'node:crypto'
 import { ensureDir, pathExists, removeQuiet, safeFolderName } from '../util/fsx.js'
 import { log, errorMessage } from '../util/logger.js'
 import { buildLaunchSpec, formatCommandRedacted } from '../services/launch-args.js'
@@ -18,6 +19,14 @@ import { layoutFor, describeManualInstall, detectInstalls, revalidateInstall } f
 import * as control from '../services/obs-control.js'
 import { instanceExecutable, instancePaths, workspacePaths } from '../services/paths.js'
 import { applySync, planSync, readInstanceAssets } from '../services/sync.js'
+import {
+  applyImport,
+  exportBundle,
+  importBundleAssets,
+  inspectBundle,
+  planImport
+} from '../services/bundle.js'
+import { WORKSPACE_MOUNT_ID } from '../services/asset-server.js'
 import type { Supervisor } from '../services/supervisor.js'
 
 /** Methods of the API that main implements; the shape is checked against FleetApi. */
@@ -65,7 +74,7 @@ const FORWARDED: IpcEventName[] = [
   'stats:instance',
   'stats:system',
   'health:changed',
-  'preview:frame',
+  'preview:frames',
   'log:entry',
   'snapshot:changed',
   'assets:changed'
@@ -104,6 +113,21 @@ function buildHandlers(
     const install = store.getInstall(instance.installId)
     if (!install) return null
     return { instance, install }
+  }
+
+  /**
+   * A running instance holds its configuration in memory, so files written
+   * underneath it change nothing on screen until it restarts. Saying so beats
+   * letting the operator wonder why the sync appeared to do nothing.
+   */
+  const warnAboutRunningTargets = (instanceIds: string[]): void => {
+    for (const id of new Set(instanceIds.filter((target) => launcher.isRunning(target)))) {
+      log.warn(
+        'sync',
+        `"${store.getInstance(id)?.name ?? id}" is running; restart it to pick up the copied files.`,
+        id
+      )
+    }
   }
 
   return {
@@ -271,8 +295,7 @@ function buildHandlers(
       multiview.setVisible(ids)
     },
     captureNow: async (id) => {
-      const frame = await multiview.captureOnce(id)
-      supervisor.emit('preview:frame', frame)
+      supervisor.emit('preview:frames', [await multiview.captureOnce(id)])
     },
 
     /* ---- sync ---- */
@@ -280,7 +303,13 @@ function buildHandlers(
     readAssets: async (id) => {
       const pair = resolvePair(id)
       if (!pair) {
-        return { instanceId: id, profiles: [], sceneCollections: [], error: 'Instance not found' }
+        return {
+          instanceId: id,
+          profiles: [],
+          sceneCollections: [],
+          uiLayouts: [],
+          error: 'Instance not found'
+        }
       }
       return readInstanceAssets(pair.instance, pair.install)
     },
@@ -296,6 +325,7 @@ function buildHandlers(
                 instanceId: instance.id,
                 profiles: [],
                 sceneCollections: [],
+                uiLayouts: [],
                 error: 'OBS install missing'
               }
         )
@@ -307,29 +337,134 @@ function buildHandlers(
 
     applySync: async (plan, transform) => {
       const result = await applySync(plan, resolvePair, transform)
+      warnAboutRunningTargets(result.applied.map((item) => item.targetInstanceId))
+      return result
+    },
 
-      // Instances that were running during a sync are still holding the old
-      // files in memory; make that explicit rather than letting the operator
-      // wonder why nothing changed on screen.
-      const touchedRunning = new Set(
-        result.applied
-          .map((item) => item.targetInstanceId)
-          .filter((id) => launcher.isRunning(id))
+    /* ---- import / export ---- */
+
+    exportBundle: async (request) => {
+      const window = getWindow()
+      if (!window) return null
+
+      const suggested = `obs-fleet-${new Date().toISOString().slice(0, 10)}.zip`
+      const result = await dialog.showSaveDialog(window, {
+        title: 'Export fleet bundle',
+        defaultPath: suggested,
+        filters: [{ name: 'OBS Fleet bundle', extensions: ['zip'] }]
+      })
+      if (result.canceled || !result.filePath) return null
+
+      const { buffer } = await exportBundle(
+        request,
+        resolvePair,
+        workspacePaths(store.getSettings().root).assets,
+        app.getVersion()
       )
-      for (const id of touchedRunning) {
-        log.warn(
-          'sync',
-          `"${store.getInstance(id)?.name ?? id}" is running; restart it to pick up the synced files.`,
-          id
-        )
-      }
+      await fs.writeFile(result.filePath, buffer)
 
+      return { path: result.filePath, sizeBytes: buffer.length }
+    },
+
+    chooseBundle: async () => {
+      const window = getWindow()
+      if (!window) return null
+      const result = await dialog.showOpenDialog(window, {
+        title: 'Open fleet bundle',
+        properties: ['openFile'],
+        filters: [{ name: 'OBS Fleet bundle', extensions: ['zip'] }]
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+      return inspectBundle(result.filePaths[0])
+    },
+
+    inspectBundle: async (file) => inspectBundle(file),
+
+    planImport: async (request) =>
+      planImport(request, resolvePair, store.getSettings().root),
+
+    applyImport: async (plan, transform) => {
+      const result = await applyImport(plan.plan, plan.stagingDir, transform, resolvePair)
+      warnAboutRunningTargets(result.applied.map((item) => item.targetInstanceId))
+      return result
+    },
+
+    importBundleAssets: async (file, overwrite) => {
+      const result = await importBundleAssets(
+        file,
+        workspacePaths(store.getSettings().root).assets,
+        { overwrite }
+      )
+      assets.invalidate()
       return result
     },
 
     /* ---- HTML assets ---- */
 
     listHtmlAssets: async () => assets.list(),
+
+    listAssetMounts: async () => {
+      // Warm the listings so counts and sizes are populated.
+      await assets.list()
+      return assets.mountStatuses()
+    },
+
+    addAssetMount: async () => {
+      const window = getWindow()
+      if (!window) return assets.mountStatuses()
+
+      const result = await dialog.showOpenDialog(window, {
+        title: 'Attach a folder to publish to every instance',
+        properties: ['openDirectory']
+      })
+      if (result.canceled || !result.filePaths[0]) return assets.mountStatuses()
+
+      const folder = result.filePaths[0]
+      const settings = store.getSettings()
+
+      if (settings.assetMounts.some((mount) => path.resolve(mount.path) === path.resolve(folder))) {
+        throw new Error('That folder is already attached')
+      }
+
+      const mount = {
+        id: randomUUID().slice(0, 8),
+        name: path.basename(folder) || 'Assets',
+        path: folder,
+        enabled: true,
+        // Large media libraries are the common case here, and watching one
+        // recursively costs file handles for files that rarely change.
+        watch: false,
+        builtIn: false
+      }
+
+      await supervisor.applySettings({ assetMounts: [...settings.assetMounts, mount] })
+      await assets.list()
+      return assets.mountStatuses()
+    },
+
+    updateAssetMount: async (id, patch) => {
+      if (id === WORKSPACE_MOUNT_ID) {
+        throw new Error('The workspace asset folder is built in and cannot be reconfigured')
+      }
+      const settings = store.getSettings()
+      const next = settings.assetMounts.map((mount) =>
+        mount.id === id ? { ...mount, ...patch, id: mount.id, builtIn: false } : mount
+      )
+      await supervisor.applySettings({ assetMounts: next })
+      await assets.list()
+      return assets.mountStatuses()
+    },
+
+    removeAssetMount: async (id) => {
+      if (id === WORKSPACE_MOUNT_ID) {
+        throw new Error('The workspace asset folder is built in and cannot be removed')
+      }
+      const settings = store.getSettings()
+      await supervisor.applySettings({
+        assetMounts: settings.assetMounts.filter((mount) => mount.id !== id)
+      })
+      return assets.mountStatuses()
+    },
 
     importHtmlAssets: async () => {
       const window = getWindow()

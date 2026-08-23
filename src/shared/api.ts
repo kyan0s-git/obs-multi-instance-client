@@ -1,5 +1,8 @@
 import type {
+  AssetMount,
+  AssetMountStatus,
   BrowserSourceDeployTarget,
+  BundleContents,
   BrowserSourceSpec,
   BulkOutcome,
   BulkRequest,
@@ -18,6 +21,9 @@ import type {
   NativeWindow,
   ObsInstall,
   ObsInstance,
+  ExportBundleRequest,
+  ImportBundleRequest,
+  ImportPlan,
   SyncPlan,
   SyncResult,
   SyncTransform,
@@ -51,6 +57,8 @@ export interface SyncPlanRequest {
   targetInstanceIds: string[]
   profiles: string[]
   sceneCollections: string[]
+  /** Copy the source's window and dock arrangement. */
+  uiLayout: boolean
   transform: SyncTransform
   skipIdentical: boolean
 }
@@ -137,8 +145,20 @@ export interface FleetApi {
   planSync(request: SyncPlanRequest): Promise<SyncPlan>
   applySync(plan: SyncPlan, transform: SyncTransform): Promise<SyncResult>
 
+  /* ---- import / export ---- */
+  exportBundle(request: ExportBundleRequest): Promise<{ path: string; sizeBytes: number } | null>
+  chooseBundle(): Promise<BundleContents | null>
+  inspectBundle(file: string): Promise<BundleContents>
+  planImport(request: ImportBundleRequest): Promise<ImportPlan>
+  applyImport(plan: ImportPlan, transform: SyncTransform): Promise<SyncResult>
+  importBundleAssets(file: string, overwrite: boolean): Promise<{ written: number; skipped: number }>
+
   /* ---- HTML assets ---- */
   listHtmlAssets(): Promise<HtmlAsset[]>
+  listAssetMounts(): Promise<AssetMountStatus[]>
+  addAssetMount(): Promise<AssetMountStatus[]>
+  updateAssetMount(id: string, patch: Partial<AssetMount>): Promise<AssetMountStatus[]>
+  removeAssetMount(id: string): Promise<AssetMountStatus[]>
   importHtmlAssets(): Promise<HtmlAsset[]>
   createHtmlAsset(name: string, contents: string): Promise<HtmlAsset[]>
   deleteHtmlAsset(relPath: string): Promise<HtmlAsset[]>
@@ -224,7 +244,17 @@ export const API_METHODS = [
   'readAllAssets',
   'planSync',
   'applySync',
+  'exportBundle',
+  'chooseBundle',
+  'inspectBundle',
+  'planImport',
+  'applyImport',
+  'importBundleAssets',
   'listHtmlAssets',
+  'listAssetMounts',
+  'addAssetMount',
+  'updateAssetMount',
+  'removeAssetMount',
   'importHtmlAssets',
   'createHtmlAsset',
   'deleteHtmlAsset',

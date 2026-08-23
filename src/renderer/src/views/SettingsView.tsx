@@ -271,7 +271,7 @@ export default function SettingsView(): JSX.Element {
       </Panel>
 
       <Panel title="Telemetry and previews">
-        <div className="grid-3">
+        <div className="grid-2">
           <Field label="Sampling interval (ms)" hint="How often each instance is polled for stats.">
             <input
               className="input num"
@@ -291,6 +291,21 @@ export default function SettingsView(): JSX.Element {
               value={draft.statsHistoryLength}
               onChange={(e) =>
                 setDraft({ ...draft, statsHistoryLength: Number(e.target.value) || 300 })
+              }
+            />
+          </Field>
+          <Field
+            label="Log lines per second"
+            hint="Ceiling on OBS output forwarded to the log pane, per instance. Lines that look like faults are never dropped."
+          >
+            <input
+              className="input num"
+              type="number"
+              min={1}
+              max={2000}
+              value={draft.logRateLimitPerSecond}
+              onChange={(e) =>
+                setDraft({ ...draft, logRateLimitPerSecond: Number(e.target.value) || 40 })
               }
             />
           </Field>

@@ -263,7 +263,14 @@ export interface HealthThresholds {
 /* Sync                                                                */
 /* ------------------------------------------------------------------ */
 
-export type SyncAssetKind = 'profile' | 'sceneCollection'
+/**
+ * What sync can move between instances.
+ *
+ * `uiLayout` is the OBS window arrangement — dock positions, custom browser
+ * docks, panel visibility — which lives in `user.ini` under `[BasicWindow]`
+ * rather than in a profile or scene collection.
+ */
+export type SyncAssetKind = 'profile' | 'sceneCollection' | 'uiLayout'
 
 export interface SyncAsset {
   kind: SyncAssetKind
@@ -283,6 +290,8 @@ export interface InstanceAssets {
   instanceId: string
   profiles: SyncAsset[]
   sceneCollections: SyncAsset[]
+  /** At most one entry: the instance's saved window/dock arrangement. */
+  uiLayouts: SyncAsset[]
   /** Set when the instance folder could not be inspected. */
   error: string | null
 }
@@ -304,6 +313,12 @@ export interface SyncTransform {
   tagBrowserSources: boolean
   /** Regenerate source UUIDs so copied scenes do not collide across instances. */
   regenerateUuids: boolean
+  /**
+   * Include the main window's saved position and size when copying a UI
+   * layout. Off by default: identical geometry stacks every OBS window in the
+   * same spot, which the Window layout page then has to undo.
+   */
+  includeWindowGeometry: boolean
 }
 
 export interface SyncPlanItem {
@@ -329,22 +344,125 @@ export interface SyncResult {
 }
 
 /* ------------------------------------------------------------------ */
+/* Import / export bundles                                             */
+/* ------------------------------------------------------------------ */
+
+/** One instance's configuration as packed inside a bundle. */
+export interface BundleSource {
+  instanceName: string
+  role: string
+  color: string
+  profiles: Array<{ slug: string; name: string; fileCount: number }>
+  sceneCollections: Array<{ slug: string; name: string }>
+  uiLayout: { description: string } | null
+}
+
+/** What a bundle on disk contains, read without extracting it. */
+export interface BundleContents {
+  path: string
+  sizeBytes: number
+  createdAt: number
+  createdBy: string
+  platform: string
+  sources: BundleSource[]
+  assets: { fileCount: number; totalBytes: number } | null
+  fileCount: number
+}
+
+export interface ExportBundleRequest {
+  sourceInstanceIds: string[]
+  /** Asset slugs per instance id; an empty list means every asset. */
+  profiles: Record<string, string[]>
+  sceneCollections: Record<string, string[]>
+  includeUiLayout: boolean
+  /** Bundle the workspace asset library so overlays travel with the config. */
+  includeAssets: boolean
+}
+
+export interface ImportBundleRequest {
+  file: string
+  sourceName: string
+  targetInstanceIds: string[]
+  profiles: string[]
+  sceneCollections: string[]
+  uiLayout: boolean
+  transform: SyncTransform
+  skipIdentical: boolean
+}
+
+/** A planned import, with the staging folder it will be applied from. */
+export interface ImportPlan {
+  plan: SyncPlan
+  stagingDir: string
+}
+
+/* ------------------------------------------------------------------ */
 /* HTML assets / browser sources                                       */
 /* ------------------------------------------------------------------ */
+
+/**
+ * A folder published to every instance by the built-in asset server.
+ *
+ * The workspace's own `assets/` folder is always mounted at the root. Extra
+ * mounts let a team point the fleet at an existing media library — b-roll,
+ * stings, logo packs, font files — without copying gigabytes into the
+ * workspace.
+ */
+export interface AssetMount {
+  id: string
+  /** Human label shown in the UI. */
+  name: string
+  /** Absolute path of the folder on disk. */
+  path: string
+  enabled: boolean
+  /**
+   * Watch the folder for changes and push a live reload.
+   *
+   * Off by default for added mounts: recursively watching a large media
+   * library costs file handles and CPU for files that rarely change, and OBS
+   * re-reads media on scene activation anyway.
+   */
+  watch: boolean
+  /** True for the built-in workspace mount, which cannot be removed. */
+  builtIn: boolean
+}
+
+export interface AssetMountStatus {
+  id: string
+  name: string
+  path: string
+  enabled: boolean
+  watch: boolean
+  builtIn: boolean
+  /** Populated when the folder is missing or unreadable. */
+  error: string | null
+  fileCount: number
+  totalBytes: number
+  /** True when the listing hit its cap and is not showing everything. */
+  truncated: boolean
+  /** URL prefix this mount is served under. */
+  urlPrefix: string
+}
 
 export interface HtmlAsset {
   id: string
   name: string
-  /** Path relative to the workspace `assets/` root. */
+  /** Which mount this file came from. */
+  mountId: string
+  /** Path relative to that mount's root. */
   relPath: string
   absPath: string
   sizeBytes: number
   modifiedAt: number
   /** URL served by the built-in asset server. */
   url: string
-  /** Declared `{{token}}` placeholders found in the file. */
+  /** Broad category, used for filtering and for picking the right OBS source. */
+  kind: AssetKind
+  /** Declared `{{token}}` placeholders found in the file (HTML only). */
   tokens: string[]
 }
+
+export type AssetKind = 'html' | 'image' | 'video' | 'audio' | 'script' | 'font' | 'other'
 
 export interface BrowserSourceSpec {
   /** Source name inside OBS. */
@@ -468,6 +586,14 @@ export interface WorkspaceSettings {
   /** Port for the built-in HTML asset server. */
   assetServerPort: number
   assetServerEnabled: boolean
+  /** Extra folders published to every instance alongside the workspace assets. */
+  assetMounts: AssetMount[]
+  /**
+   * Cap on OBS stdout/stderr lines forwarded to the log pane per second, per
+   * instance. A verbose OBS can emit thousands, and every one costs an IPC
+   * message plus a renderer re-render.
+   */
+  logRateLimitPerSecond: number
   theme: 'dark' | 'midnight' | 'light'
   confirmDestructive: boolean
 }
@@ -609,7 +735,7 @@ export interface IpcEvents {
   'stats:instance': InstanceStats[]
   'stats:system': SystemStats
   'health:changed': InstanceHealth[]
-  'preview:frame': PreviewFrame
+  'preview:frames': PreviewFrame[]
   'log:entry': LogEntry
   'snapshot:changed': InstanceSnapshot
   'assets:changed': HtmlAsset[]
