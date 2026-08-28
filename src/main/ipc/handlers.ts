@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { BrowserWindow, app, dialog, ipcMain, screen, shell } from 'electron'
+import { BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
 import {
   API_METHODS,
   IPC_EVENT_CHANNEL,
@@ -11,6 +11,7 @@ import {
   type LaunchPreview
 } from '@shared/api'
 import type { IpcEventName, IpcEvents, InstanceAssets } from '@shared/types'
+import { BUILD_ID } from '@shared/version.js'
 import { randomUUID } from 'node:crypto'
 import { ensureDir, pathExists, removeQuiet, safeFolderName } from '../util/fsx.js'
 import { log, errorMessage } from '../util/logger.js'
@@ -222,6 +223,28 @@ function buildHandlers(
     repairInstance: async (id) => instances.repair(id),
     verifyInstance: async (id) => instances.verify(id),
     discoverInstances: async () => instances.discover(),
+
+    previewBulkUpdate: async (request) => instances.preview(request),
+
+    applyBulkUpdate: async (request) => {
+      const outcomes = await instances.applyBulkUpdate(request)
+
+      // A running instance holds its launch options from when it started, so
+      // a changed flag only takes effect on the next launch.
+      warnAboutRunningTargets(
+        outcomes.filter((outcome) => outcome.changed > 0).map((outcome) => outcome.instanceId)
+      )
+
+      // Websocket changes move the endpoint the pool is pointed at.
+      if (request.fields.some((field) => field.startsWith('websocket'))) {
+        for (const outcome of outcomes) {
+          const instance = store.getInstance(outcome.instanceId)
+          if (instance) await pool.open(instance)
+        }
+      }
+
+      return outcomes
+    },
     renumberPorts: async () => instances.renumberPorts(),
 
     previewLaunch: async (id): Promise<LaunchPreview> => {
@@ -359,7 +382,7 @@ function buildHandlers(
         request,
         resolvePair,
         workspacePaths(store.getSettings().root).assets,
-        app.getVersion()
+        BUILD_ID
       )
       await fs.writeFile(result.filePath, buffer)
 

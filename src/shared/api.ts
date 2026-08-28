@@ -2,6 +2,9 @@ import type {
   AssetMount,
   AssetMountStatus,
   BrowserSourceDeployTarget,
+  BulkUpdateOutcome,
+  BulkUpdatePreview,
+  BulkUpdateRequest,
   BundleContents,
   BrowserSourceSpec,
   BulkOutcome,
@@ -101,6 +104,10 @@ export interface FleetApi {
   repairInstance(id: string): Promise<string[]>
   verifyInstance(id: string): Promise<string[]>
   discoverInstances(): Promise<ObsInstance[]>
+  /** Works out what a mass update would change, without writing anything. */
+  previewBulkUpdate(request: BulkUpdateRequest): Promise<BulkUpdatePreview>
+  /** Applies a mass update across the selected instances. */
+  applyBulkUpdate(request: BulkUpdateRequest): Promise<BulkUpdateOutcome[]>
   renumberPorts(): Promise<void>
   previewLaunch(id: string): Promise<LaunchPreview>
 
@@ -216,6 +223,8 @@ export const API_METHODS = [
   'repairInstance',
   'verifyInstance',
   'discoverInstances',
+  'previewBulkUpdate',
+  'applyBulkUpdate',
   'renumberPorts',
   'previewLaunch',
   'launch',

@@ -2,8 +2,16 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type {
+  BulkUpdatableField,
+  BulkUpdateChange,
+  BulkUpdateOutcome,
+  BulkUpdatePreview,
+  BulkUpdatePreviewItem,
+  BulkUpdateRequest,
+  BulkUpdateValues,
   CreateInstanceRequest,
   CreateInstanceResult,
+  InstanceLaunchOptions,
   ObsInstall,
   ObsInstance
 } from '@shared/types'
@@ -318,6 +326,129 @@ export class InstanceManager {
     return adopted
   }
 
+  /* ---------------- bulk update ---------------- */
+
+  /**
+   * Works out what a bulk update would change, without writing anything.
+   *
+   * Shown for confirmation because applying a wrong flag to twelve instances
+   * at once is the kind of mistake that is discovered mid-show, and because
+   * "nothing here actually differs" is a useful answer in its own right.
+   */
+  preview(request: BulkUpdateRequest): BulkUpdatePreview {
+    const items: BulkUpdatePreviewItem[] = []
+    const warnings: string[] = []
+
+    // Repointing at a different OBS install invalidates a portable instance's
+    // junctions, so provisioning has to be re-run whether or not it was asked
+    // for.
+    const installChanged = request.fields.includes('installId')
+    const reprovision = request.reprovision || installChanged
+
+    if (installChanged && !request.reprovision) {
+      warnings.push(
+        'Changing the OBS installation re-runs provisioning, because portable instances link into the install they were built against.'
+      )
+    }
+
+    for (const instanceId of request.instanceIds) {
+      const instance = this.store.getInstance(instanceId)
+      if (!instance) continue
+
+      const changes = describeChanges(instance, request.fields, request.values, this.store)
+      const itemWarnings: string[] = []
+
+      if (request.fields.includes('installId')) {
+        const target = this.store.getInstall(request.values.installId ?? '')
+        if (!target) itemWarnings.push('The selected OBS installation no longer exists.')
+        else if (target.problems.length > 0) {
+          itemWarnings.push(`Target installation reports: ${target.problems.join('; ')}`)
+        }
+      }
+
+      if (request.fields.includes('safeMode') && request.values.safeMode === true) {
+        itemWarnings.push(
+          'Safe Mode disables the websocket server, so OBS Fleet will not be able to control this instance.'
+        )
+      }
+
+      items.push({
+        instanceId,
+        instanceName: instance.name,
+        changes,
+        warnings: itemWarnings,
+        willReprovision: reprovision && changes.length > 0
+      })
+    }
+
+    return { items, warnings }
+  }
+
+  /**
+   * Applies a bulk update.
+   *
+   * A failure on one instance never stops the others: a partial result the
+   * operator can see beats an all-or-nothing rollback they cannot reason about
+   * with a show about to start.
+   */
+  async applyBulkUpdate(request: BulkUpdateRequest): Promise<BulkUpdateOutcome[]> {
+    const preview = this.preview(request)
+    const outcomes: BulkUpdateOutcome[] = []
+
+    for (const item of preview.items) {
+      if (item.changes.length === 0) {
+        outcomes.push({
+          instanceId: item.instanceId,
+          ok: true,
+          changed: 0,
+          detail: 'Already matches'
+        })
+        continue
+      }
+
+      try {
+        const instance = this.store.getInstance(item.instanceId)
+        if (!instance) throw new Error('Instance no longer exists')
+
+        await this.update(item.instanceId, buildPatch(instance, request.fields, request.values))
+
+        if (item.willReprovision) {
+          const remaining = await this.repair(item.instanceId)
+          if (remaining.length > 0) {
+            outcomes.push({
+              instanceId: item.instanceId,
+              ok: false,
+              changed: item.changes.length,
+              detail: `Updated, but provisioning reported: ${remaining.join('; ')}`
+            })
+            continue
+          }
+        }
+
+        outcomes.push({
+          instanceId: item.instanceId,
+          ok: true,
+          changed: item.changes.length,
+          detail: item.willReprovision
+            ? `${item.changes.length} change(s), re-provisioned`
+            : `${item.changes.length} change(s)`
+        })
+      } catch (err) {
+        outcomes.push({
+          instanceId: item.instanceId,
+          ok: false,
+          changed: 0,
+          detail: errorMessage(err)
+        })
+      }
+    }
+
+    const changed = outcomes.filter((outcome) => outcome.ok && outcome.changed > 0).length
+    log.info('instances', `Bulk update touched ${changed} of ${outcomes.length} instance(s)`)
+
+    return outcomes
+  }
+
   /** Reassigns every instance to consecutive free ports from the base. */
   async renumberPorts(): Promise<void> {
     const settings = this.store.getSettings()
@@ -331,6 +462,185 @@ export class InstanceManager {
       await this.update(instance.id, { websocket: { ...instance.websocket, port } })
     }
   }
+}
+
+/** Human labels for the bulk-update fields, used in the confirmation table. */
+const FIELD_LABELS: Record<BulkUpdatableField, string> = {
+  installId: 'OBS installation',
+  role: 'Role',
+  color: 'Accent colour',
+  notes: 'Notes',
+  disabled: 'Skip in bulk operations',
+  autoRestart: 'Restart on crash',
+  websocketEnabled: 'Remote control',
+  websocketIpv4Only: 'Bind IPv4 only',
+  profile: 'Profile',
+  sceneCollection: 'Scene collection',
+  startScene: 'Start scene',
+  startRecording: 'Start recording on launch',
+  startStreaming: 'Start streaming on launch',
+  startReplayBuffer: 'Start replay buffer on launch',
+  startVirtualCam: 'Start virtual camera on launch',
+  studioMode: 'Studio mode',
+  minimizeToTray: 'Minimise to tray',
+  alwaysOnTop: 'Always on top',
+  safeMode: 'Safe mode',
+  onlyBundledPlugins: 'Only bundled plugins',
+  disableUpdater: 'Disable updater',
+  disableMissingFilesCheck: 'Disable missing files check',
+  verboseLog: 'Verbose logging',
+  extraArgs: 'Extra arguments'
+}
+
+/** Launch fields map straight onto `InstanceLaunchOptions` keys. */
+const LAUNCH_FIELDS = new Set<BulkUpdatableField>([
+  'profile',
+  'sceneCollection',
+  'startScene',
+  'startRecording',
+  'startStreaming',
+  'startReplayBuffer',
+  'startVirtualCam',
+  'studioMode',
+  'minimizeToTray',
+  'alwaysOnTop',
+  'safeMode',
+  'onlyBundledPlugins',
+  'disableUpdater',
+  'disableMissingFilesCheck',
+  'verboseLog',
+  'extraArgs'
+])
+
+/** Reads the value a field currently holds on an instance. */
+function currentValue(instance: ObsInstance, field: BulkUpdatableField): unknown {
+  switch (field) {
+    case 'installId':
+      return instance.installId
+    case 'role':
+      return instance.role
+    case 'color':
+      return instance.color
+    case 'notes':
+      return instance.notes
+    case 'disabled':
+      return instance.disabled
+    case 'autoRestart':
+      return instance.autoRestart
+    case 'websocketEnabled':
+      return instance.websocket.enabled
+    case 'websocketIpv4Only':
+      return instance.websocket.ipv4Only
+    default:
+      return instance.launch[field as keyof InstanceLaunchOptions]
+  }
+}
+
+/**
+ * Lists the fields that would actually change.
+ *
+ * Comparing before writing is what lets the UI say "8 of 12 already match",
+ * and keeps an unchanged instance from having its `updatedAt` bumped for
+ * nothing.
+ */
+function describeChanges(
+  instance: ObsInstance,
+  fields: BulkUpdatableField[],
+  values: BulkUpdateValues,
+  store: Store
+): BulkUpdateChange[] {
+  const changes: BulkUpdateChange[] = []
+
+  for (const field of fields) {
+    const next = values[field]
+    if (next === undefined) continue
+
+    const before = currentValue(instance, field)
+    if (sameValue(before, next)) continue
+
+    changes.push({
+      field,
+      label: FIELD_LABELS[field],
+      from: formatValue(field, before, store),
+      to: formatValue(field, next, store)
+    })
+  }
+
+  return changes
+}
+
+/** Builds the patch `Store.updateInstance` expects from the flat field set. */
+function buildPatch(
+  instance: ObsInstance,
+  fields: BulkUpdatableField[],
+  values: BulkUpdateValues
+): Partial<ObsInstance> {
+  const patch: Partial<ObsInstance> = {}
+  const launch: Partial<InstanceLaunchOptions> = {}
+  const websocket = { ...instance.websocket }
+  let touchedWebsocket = false
+
+  for (const field of fields) {
+    const next = values[field]
+    if (next === undefined) continue
+
+    if (LAUNCH_FIELDS.has(field)) {
+      Object.assign(launch, { [field]: next })
+      continue
+    }
+
+    switch (field) {
+      case 'installId':
+        patch.installId = String(next)
+        break
+      case 'role':
+        patch.role = String(next)
+        break
+      case 'color':
+        patch.color = String(next)
+        break
+      case 'notes':
+        patch.notes = String(next)
+        break
+      case 'disabled':
+        patch.disabled = Boolean(next)
+        break
+      case 'autoRestart':
+        patch.autoRestart = Boolean(next)
+        break
+      case 'websocketEnabled':
+        websocket.enabled = Boolean(next)
+        touchedWebsocket = true
+        break
+      case 'websocketIpv4Only':
+        websocket.ipv4Only = Boolean(next)
+        touchedWebsocket = true
+        break
+    }
+  }
+
+  if (Object.keys(launch).length > 0) patch.launch = launch as InstanceLaunchOptions
+  if (touchedWebsocket) patch.websocket = websocket
+
+  return patch
+}
+
+function sameValue(before: unknown, next: unknown): boolean {
+  if (Array.isArray(before) && Array.isArray(next)) {
+    return before.length === next.length && before.every((entry, i) => entry === next[i])
+  }
+  return before === next
+}
+
+/** Renders a value for the confirmation table. */
+function formatValue(field: BulkUpdatableField, value: unknown, store: Store): string {
+  if (field === 'installId') {
+    return store.getInstall(String(value))?.label ?? String(value)
+  }
+  if (Array.isArray(value)) return value.length === 0 ? '(none)' : value.join(' ')
+  if (typeof value === 'boolean') return value ? 'on' : 'off'
+  if (value === null || value === '') return '(unset)'
+  return String(value)
 }
 
 /**

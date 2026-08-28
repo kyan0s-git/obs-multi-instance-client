@@ -5,6 +5,7 @@ import { disposeIpc, registerIpc } from './ipc/handlers.js'
 import { detectInstalls } from './services/obs-install.js'
 import { Supervisor } from './services/supervisor.js'
 import { log, errorMessage } from './util/logger.js'
+import { BUILD_ID } from '@shared/version.js'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -42,6 +43,10 @@ if (!app.requestSingleInstanceLock()) {
 
 async function main(): Promise<void> {
   await app.whenReady()
+
+  // First line of every session log: bug reports arrive as a log file, and
+  // without the build metadata there is no way to know which commit produced it.
+  log.info('main', `OBS Fleet ${BUILD_ID} on ${process.platform}-${process.arch}`)
 
   supervisor = new Supervisor()
 

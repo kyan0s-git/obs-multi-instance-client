@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { HealthThresholds, WorkspaceSettings } from '@shared/types'
+import { APP_VERSION, BUILD_COMMIT, BUILD_DATE, BUILD_ID } from '@shared/version'
 import { IconFolder, IconPlus, IconRefresh, IconTrash, IconWarning } from '../components/Icons'
 import { Callout, Check, Chip, Field, Panel } from '../components/ui'
 import { guard, toast, useFleet } from '../state/store'
@@ -440,6 +441,12 @@ export default function SettingsView(): JSX.Element {
             unique obs-websocket port, and are controlled entirely over that connection.
           </div>
           <div className="mono faint" style={{ fontSize: 11, display: 'grid', gap: 2 }}>
+            <span title={BUILD_ID}>
+              OBS Fleet {APP_VERSION}{' '}
+              <span className="num">
+                (build {BUILD_DATE}.{BUILD_COMMIT})
+              </span>
+            </span>
             <span>Platform: {window.platform.os} ({window.platform.arch})</span>
             <span>Electron {window.platform.versions.electron}</span>
             <span>Chromium {window.platform.versions.chrome}</span>

@@ -701,6 +701,116 @@ export interface InstanceSnapshot {
 }
 
 /* ------------------------------------------------------------------ */
+/* Bulk instance updates                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A field a bulk update is allowed to write.
+ *
+ * The set is explicit rather than a `Partial<ObsInstance>` because a patch
+ * object cannot distinguish "leave autoRestart alone" from "set autoRestart to
+ * false" — and on a twelve-instance fleet, silently clearing a flag on every
+ * instance is exactly the kind of mistake that is discovered mid-show.
+ */
+export type BulkUpdatableField =
+  | 'installId'
+  | 'role'
+  | 'color'
+  | 'notes'
+  | 'disabled'
+  | 'autoRestart'
+  | 'websocketEnabled'
+  | 'websocketIpv4Only'
+  | 'profile'
+  | 'sceneCollection'
+  | 'startScene'
+  | 'startRecording'
+  | 'startStreaming'
+  | 'startReplayBuffer'
+  | 'startVirtualCam'
+  | 'studioMode'
+  | 'minimizeToTray'
+  | 'alwaysOnTop'
+  | 'safeMode'
+  | 'onlyBundledPlugins'
+  | 'disableUpdater'
+  | 'disableMissingFilesCheck'
+  | 'verboseLog'
+  | 'extraArgs'
+
+/** Values a bulk update can apply. Only fields named in `fields` are read. */
+export interface BulkUpdateValues {
+  installId?: string
+  role?: string
+  color?: string
+  notes?: string
+  disabled?: boolean
+  autoRestart?: boolean
+  websocketEnabled?: boolean
+  websocketIpv4Only?: boolean
+  profile?: string | null
+  sceneCollection?: string | null
+  startScene?: string | null
+  startRecording?: boolean
+  startStreaming?: boolean
+  startReplayBuffer?: boolean
+  startVirtualCam?: boolean
+  studioMode?: boolean
+  minimizeToTray?: boolean
+  alwaysOnTop?: boolean
+  safeMode?: boolean
+  onlyBundledPlugins?: boolean
+  disableUpdater?: boolean
+  disableMissingFilesCheck?: boolean
+  verboseLog?: boolean
+  extraArgs?: string[]
+}
+
+export interface BulkUpdateRequest {
+  instanceIds: string[]
+  fields: BulkUpdatableField[]
+  values: BulkUpdateValues
+  /**
+   * Re-run provisioning after applying.
+   *
+   * This is what repairs a fleet after OBS itself was upgraded or moved:
+   * portable instances hold junctions into the base install, and those have to
+   * be rebuilt. Changing `installId` forces it on.
+   */
+  reprovision: boolean
+}
+
+export interface BulkUpdateChange {
+  field: BulkUpdatableField
+  label: string
+  from: string
+  to: string
+}
+
+/** What a bulk update would do to one instance, before anything is written. */
+export interface BulkUpdatePreviewItem {
+  instanceId: string
+  instanceName: string
+  changes: BulkUpdateChange[]
+  /** Reasons this instance needs attention, e.g. it is currently running. */
+  warnings: string[]
+  /** True when provisioning will be re-run for this instance. */
+  willReprovision: boolean
+}
+
+export interface BulkUpdatePreview {
+  items: BulkUpdatePreviewItem[]
+  warnings: string[]
+}
+
+export interface BulkUpdateOutcome {
+  instanceId: string
+  ok: boolean
+  changed: number
+  detail: string
+}
+
+/* ------------------------------------------------------------------ */
 /* Instance creation                                                   */
 /* ------------------------------------------------------------------ */
 

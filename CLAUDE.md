@@ -46,8 +46,9 @@ design decisions.
 ```bash
 npm run dev         # hot-reloading development build
 npm run typecheck   # main (tsconfig.node.json) + renderer (tsconfig.web.json)
-npm test            # vitest: launch args, tiling, ini, health, sync,
-                    #         zip, bundle, ui-layout, hash-cache, asset-server
+npm test            # vitest: launch args, tiling, ini, health, sync, zip,
+                    #         bundle, ui-layout, hash-cache, asset-server,
+                    #         bulk-update, version
 npm run build       # typecheck + electron-vite build into out/
 npm run dist        # packaged installer for the current platform
 ```
@@ -135,6 +136,24 @@ system `unzip`, so keep that test passing if you touch the format.
 against a mount root and refuses anything escaping it; bundle import checks
 archive paths both before and after resolution. Both guards exist because the
 input can come from a crafted URL or someone else's bundle.
+
+**Mass update takes an explicit field list, not a patch object.**
+`BulkUpdateRequest` carries `fields` *and* `values` because a
+`Partial<ObsInstance>` cannot distinguish "leave `autoRestart` alone" from "set
+it false" — a boolean that is absent and a boolean that is false look the same.
+Only fields named in `fields` are written. `preview()` is pure and must stay
+that way: the confirmation table is built from it. Changing `installId` forces
+re-provisioning regardless of the request, because a Windows portable instance's
+junctions point into the install it was built against. Covered by
+`tests/bulk-update.test.ts`.
+
+**Build identity comes from `define`, not from `app.getVersion()`.**
+`src/shared/version.ts` reads `__APP_VERSION__` / `__BUILD_COMMIT__` /
+`__BUILD_DATE__`, which `electron.vite.config.ts` substitutes into all three
+bundles. The `typeof` guards are load-bearing: vitest does not go through that
+config, and an unreplaced identifier would be a ReferenceError rather than a
+missing string. `BUILD_ID` is SemVer with build metadata — `0.2.0+MMDD.sha` —
+and is what goes into bundle manifests and the first line of the session log.
 
 **The preload is `.mjs`, not `.js`.** The package is `type: module`, so
 electron-vite emits ESM, and Electron loads an ESM preload only with

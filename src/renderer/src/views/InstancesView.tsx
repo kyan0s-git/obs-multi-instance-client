@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type {
+  BulkUpdatableField,
+  BulkUpdatePreview,
+  BulkUpdateValues,
   CreateInstanceRequest,
   InstanceLaunchOptions,
   IsolationStrategy,
@@ -7,14 +10,17 @@ import type {
 } from '@shared/types'
 import type { LaunchPreview } from '@shared/api'
 import {
+  IconCheck,
   IconCopy,
   IconFolder,
+  IconLayers,
   IconPlay,
   IconPlus,
   IconRefresh,
   IconStop,
   IconTerminal,
   IconTrash,
+  IconWarning,
   IconWrench
 } from '../components/Icons'
 import { Callout, Check, Chip, Dialog, Empty, Field, Panel } from '../components/ui'
@@ -26,6 +32,8 @@ export default function InstancesView(): JSX.Element {
   const runtimes = useFleet((state) => state.runtimes)
 
   const [creating, setCreating] = useState(false)
+  const [massUpdating, setMassUpdating] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<ObsInstance | null>(null)
   const [preview, setPreview] = useState<{ instance: ObsInstance; preview: LaunchPreview } | null>(
     null
@@ -71,6 +79,15 @@ export default function InstancesView(): JSX.Element {
               <IconRefresh size={13} /> Scan workspace
             </button>
             <button
+              className="btn btn--sm"
+              disabled={instances.length === 0}
+              title="Change settings on many instances at once"
+              onClick={() => setMassUpdating(true)}
+            >
+              <IconLayers size={13} /> Mass update
+              {selected.size > 0 ? ` (${selected.size})` : ''}
+            </button>
+            <button
               className="btn btn--sm btn--primary"
               disabled={installs.length === 0}
               onClick={() => setCreating(true)}
@@ -91,6 +108,18 @@ export default function InstancesView(): JSX.Element {
             <table className="table">
               <thead>
                 <tr>
+                  <th style={{ width: 30 }}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all instances"
+                      checked={selected.size === instances.length && instances.length > 0}
+                      onChange={(e) =>
+                        setSelected(
+                          e.target.checked ? new Set(instances.map((i) => i.id)) : new Set()
+                        )
+                      }
+                    />
+                  </th>
                   <th style={{ width: 34 }} />
                   <th>Name</th>
                   <th>Role</th>
@@ -110,6 +139,21 @@ export default function InstancesView(): JSX.Element {
 
                   return (
                     <tr key={instance.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${instance.name}`}
+                          checked={selected.has(instance.id)}
+                          onChange={(e) =>
+                            setSelected((current) => {
+                              const next = new Set(current)
+                              if (e.target.checked) next.add(instance.id)
+                              else next.delete(instance.id)
+                              return next
+                            })
+                          }
+                        />
+                      </td>
                       <td>
                         <div style={{ display: 'grid', gap: 1 }}>
                           <button
@@ -256,6 +300,13 @@ export default function InstancesView(): JSX.Element {
       </Panel>
 
       {creating && <CreateDialog onClose={() => setCreating(false)} />}
+      {massUpdating && (
+        <MassUpdateDialog
+          preselected={selected}
+          onClose={() => setMassUpdating(false)}
+          onApplied={() => setSelected(new Set())}
+        />
+      )}
       {editing && <EditDialog instance={editing} onClose={() => setEditing(null)} />}
       {preview && (
         <Dialog
@@ -314,6 +365,449 @@ export default function InstancesView(): JSX.Element {
       )}
     </>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/* Mass update                                                         */
+/* ------------------------------------------------------------------ */
+
+interface FieldSpec {
+  field: BulkUpdatableField
+  label: string
+  group: string
+  kind: 'boolean' | 'text' | 'nullableText' | 'color' | 'install' | 'lines'
+  hint?: string
+}
+
+/**
+ * Fields a mass update can write.
+ *
+ * Only ticked fields are applied. That distinction is the whole point: a plain
+ * patch cannot tell "leave auto-restart alone" from "turn auto-restart off",
+ * and quietly clearing a flag on twelve instances is discovered mid-show.
+ */
+const MASS_FIELDS: FieldSpec[] = [
+  { field: 'installId', label: 'OBS installation', group: 'Installation', kind: 'install',
+    hint: 'Re-runs provisioning, because portable instances link into the install they were built against.' },
+  { field: 'profile', label: 'Profile', group: 'Launch selection', kind: 'nullableText' },
+  { field: 'sceneCollection', label: 'Scene collection', group: 'Launch selection', kind: 'nullableText' },
+  { field: 'startScene', label: 'Start scene', group: 'Launch selection', kind: 'nullableText' },
+  { field: 'startRecording', label: 'Start recording on launch', group: 'On launch', kind: 'boolean' },
+  { field: 'startStreaming', label: 'Start streaming on launch', group: 'On launch', kind: 'boolean' },
+  { field: 'startReplayBuffer', label: 'Start replay buffer', group: 'On launch', kind: 'boolean' },
+  { field: 'startVirtualCam', label: 'Start virtual camera', group: 'On launch', kind: 'boolean' },
+  { field: 'studioMode', label: 'Studio mode', group: 'Window', kind: 'boolean' },
+  { field: 'minimizeToTray', label: 'Minimise to tray', group: 'Window', kind: 'boolean' },
+  { field: 'alwaysOnTop', label: 'Always on top', group: 'Window', kind: 'boolean' },
+  { field: 'safeMode', label: 'Safe mode', group: 'Diagnostics', kind: 'boolean',
+    hint: 'Safe mode also disables the websocket server, so OBS Fleet loses control of the instance.' },
+  { field: 'onlyBundledPlugins', label: 'Only bundled plugins', group: 'Diagnostics', kind: 'boolean' },
+  { field: 'disableUpdater', label: 'Disable updater', group: 'Diagnostics', kind: 'boolean' },
+  { field: 'disableMissingFilesCheck', label: 'Disable missing files check', group: 'Diagnostics', kind: 'boolean' },
+  { field: 'verboseLog', label: 'Verbose logging', group: 'Diagnostics', kind: 'boolean' },
+  { field: 'extraArgs', label: 'Extra arguments', group: 'Diagnostics', kind: 'lines',
+    hint: 'One per line. Replaces the existing list on every selected instance.' },
+  { field: 'websocketEnabled', label: 'Remote control enabled', group: 'Control', kind: 'boolean' },
+  { field: 'websocketIpv4Only', label: 'Bind IPv4 only', group: 'Control', kind: 'boolean' },
+  { field: 'disabled', label: 'Skip in bulk operations', group: 'Fleet behaviour', kind: 'boolean' },
+  { field: 'autoRestart', label: 'Restart on crash', group: 'Fleet behaviour', kind: 'boolean' },
+  { field: 'role', label: 'Role', group: 'Identity', kind: 'text' },
+  { field: 'color', label: 'Accent colour', group: 'Identity', kind: 'color' },
+  { field: 'notes', label: 'Notes', group: 'Identity', kind: 'text' }
+]
+
+/**
+ * Applies settings across many instances at once.
+ *
+ * Everything else in this app is per-instance; on a twelve-instance rig that
+ * means twelve dialogs to turn one flag on. This is also the repair path after
+ * OBS itself is upgraded or moved, since re-provisioning rebuilds the junction
+ * farm each portable instance depends on.
+ */
+function MassUpdateDialog({
+  preselected,
+  onClose,
+  onApplied
+}: {
+  preselected: Set<string>
+  onClose: () => void
+  onApplied: () => void
+}): JSX.Element {
+  const workspace = useFleet((state) => state.workspace)
+  const runtimes = useFleet((state) => state.runtimes)
+
+  const instances = useMemo(
+    () => [...(workspace?.instances ?? [])].sort((a, b) => a.order - b.order),
+    [workspace]
+  )
+  const installs = workspace?.installs ?? []
+
+  const [targets, setTargets] = useState<Set<string>>(
+    preselected.size > 0 ? new Set(preselected) : new Set(instances.map((i) => i.id))
+  )
+  const [fields, setFields] = useState<Set<BulkUpdatableField>>(new Set())
+  const [values, setValues] = useState<BulkUpdateValues>({
+    installId: installs[0]?.id ?? '',
+    color: '#4f9dff',
+    extraArgs: []
+  })
+  const [reprovision, setReprovision] = useState(false)
+  const [preview, setPreview] = useState<BulkUpdatePreview | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const request = {
+    instanceIds: [...targets],
+    fields: [...fields],
+    values,
+    reprovision
+  }
+
+  const buildPreview = async (): Promise<void> => {
+    setBusy(true)
+    const result = await guard('Preview update', () => window.fleet.previewBulkUpdate(request))
+    setBusy(false)
+    if (result) setPreview(result)
+  }
+
+  const apply = async (): Promise<void> => {
+    setBusy(true)
+    const outcomes = await guard('Apply update', () => window.fleet.applyBulkUpdate(request))
+    setBusy(false)
+    if (!outcomes) return
+
+    const failed = outcomes.filter((outcome) => !outcome.ok)
+    const changed = outcomes.filter((outcome) => outcome.ok && outcome.changed > 0).length
+
+    if (failed.length === 0) {
+      toast('success', `Updated ${changed} instance(s)`,
+        changed < outcomes.length ? `${outcomes.length - changed} already matched.` : undefined)
+      onApplied()
+      onClose()
+    } else {
+      toast(
+        'warn',
+        `${failed.length} of ${outcomes.length} failed`,
+        failed.map((o) => `${nameOf(instances, o.instanceId)}: ${o.detail}`).join('\n')
+      )
+      setPreview(null)
+    }
+  }
+
+  const toggleField = (field: BulkUpdatableField, on: boolean): void => {
+    setPreview(null)
+    setFields((current) => {
+      const next = new Set(current)
+      if (on) next.add(field)
+      else next.delete(field)
+      return next
+    })
+  }
+
+  const groups = [...new Set(MASS_FIELDS.map((spec) => spec.group))]
+  const totalChanges = preview?.items.reduce((sum, item) => sum + item.changes.length, 0) ?? 0
+  const canPreview = targets.size > 0 && (fields.size > 0 || reprovision)
+
+  return (
+    <Dialog
+      title="Mass update instances"
+      wide
+      onClose={onClose}
+      footer={
+        <>
+          <span className="faint">
+            {targets.size} instance(s), {fields.size} field(s)
+            {preview && ` · ${totalChanges} change(s)`}
+          </span>
+          <div className="spacer" />
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          {preview ? (
+            <button
+              className="btn btn--primary"
+              disabled={busy || totalChanges === 0}
+              onClick={() => void apply()}
+            >
+              {busy ? 'Applying…' : `Apply to ${preview.items.filter((i) => i.changes.length > 0).length} instance(s)`}
+            </button>
+          ) : (
+            <button
+              className="btn btn--primary"
+              disabled={busy || !canPreview}
+              onClick={() => void buildPreview()}
+            >
+              Review changes
+            </button>
+          )}
+        </>
+      }
+    >
+      <Panel
+        title="Instances"
+        actions={
+          <button
+            className="btn btn--sm btn--ghost"
+            onClick={() => {
+              setPreview(null)
+              setTargets(
+                targets.size === instances.length ? new Set() : new Set(instances.map((i) => i.id))
+              )
+            }}
+          >
+            {targets.size === instances.length ? 'None' : 'All'}
+          </button>
+        }
+      >
+        <div className="row row--wrap" style={{ gap: 14 }}>
+          {instances.map((instance) => {
+            const runtime = runtimes[instance.id]
+            const running = runtime && runtime.state !== 'stopped' && runtime.state !== 'crashed'
+            return (
+              <Check
+                key={instance.id}
+                checked={targets.has(instance.id)}
+                onChange={(checked) => {
+                  setPreview(null)
+                  setTargets((current) => {
+                    const next = new Set(current)
+                    if (checked) next.add(instance.id)
+                    else next.delete(instance.id)
+                    return next
+                  })
+                }}
+                label={
+                  <span className="row" style={{ gap: 6 }}>
+                    <span
+                      style={{ width: 3, height: 14, borderRadius: 2, background: instance.color }}
+                    />
+                    {instance.name}
+                    {running && <Chip tone="warn">running</Chip>}
+                  </span>
+                }
+              />
+            )
+          })}
+        </div>
+      </Panel>
+
+      <Panel title="What to change">
+        <div className="field__hint" style={{ marginBottom: 12 }}>
+          Only ticked fields are written. Anything left unticked keeps whatever each instance
+          already has.
+        </div>
+
+        <div style={{ display: 'grid', gap: 16 }}>
+          {groups.map((group) => (
+            <div key={group} style={{ display: 'grid', gap: 6 }}>
+              <span className="field__label">{group}</span>
+              {MASS_FIELDS.filter((spec) => spec.group === group).map((spec) => (
+                <MassField
+                  key={spec.field}
+                  spec={spec}
+                  installs={installs}
+                  active={fields.has(spec.field)}
+                  values={values}
+                  onToggle={(on) => toggleField(spec.field, on)}
+                  onChange={(next) => {
+                    setPreview(null)
+                    setValues((current) => ({ ...current, ...next }))
+                  }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="Provisioning">
+        <Check
+          checked={reprovision || fields.has('installId')}
+          disabled={fields.has('installId')}
+          onChange={(v) => {
+            setPreview(null)
+            setReprovision(v)
+          }}
+          label="Re-run provisioning on each instance"
+        />
+        <span className="field__hint" style={{ marginLeft: 22 }}>
+          Rebuilds the per-instance view of the OBS installation and rewrites the websocket config.
+          This is the repair path after OBS itself is upgraded, moved or reinstalled. Forced on when
+          the installation changes.
+        </span>
+      </Panel>
+
+      {preview && (
+        <>
+          {preview.warnings.map((warning, index) => (
+            <Callout key={index}>{warning}</Callout>
+          ))}
+
+          <div className="table__scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Instance</th>
+                  <th>Changes</th>
+                  <th style={{ width: 120 }}>Provisioning</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preview.items.map((item) => (
+                  <tr key={item.instanceId}>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        {item.changes.length === 0 ? (
+                          <IconCheck size={12} />
+                        ) : item.warnings.length > 0 ? (
+                          <IconWarning size={12} />
+                        ) : null}
+                        {item.instanceName}
+                      </div>
+                      {item.warnings.map((warning, index) => (
+                        <div key={index} className="faint" style={{ fontSize: 11 }}>
+                          {warning}
+                        </div>
+                      ))}
+                    </td>
+                    <td>
+                      {item.changes.length === 0 ? (
+                        <span className="faint">Already matches</span>
+                      ) : (
+                        <div style={{ display: 'grid', gap: 2 }}>
+                          {item.changes.map((change) => (
+                            <div key={change.field} style={{ fontSize: 12 }}>
+                              <span className="muted">{change.label}: </span>
+                              <span className="faint mono">{change.from}</span>
+                              <span className="faint"> {'\u2192'} </span>
+                              <span className="mono">{change.to}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td>{item.willReprovision ? <Chip tone="warn">re-provision</Chip> : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {totalChanges === 0 && (
+            <Callout>Nothing to do — every selected instance already matches.</Callout>
+          )}
+        </>
+      )}
+    </Dialog>
+  )
+}
+
+/** One toggleable field row in the mass-update form. */
+function MassField({
+  spec,
+  installs,
+  active,
+  values,
+  onToggle,
+  onChange
+}: {
+  spec: FieldSpec
+  installs: Array<{ id: string; label: string }>
+  active: boolean
+  values: BulkUpdateValues
+  onToggle: (on: boolean) => void
+  onChange: (next: Partial<BulkUpdateValues>) => void
+}): JSX.Element {
+  const value = values[spec.field]
+
+  return (
+    <div style={{ display: 'grid', gap: 2 }}>
+      <div className="row" style={{ gap: 10 }}>
+        <Check checked={active} onChange={onToggle} label={spec.label} />
+        <div className="spacer" />
+
+        {spec.kind === 'boolean' && (
+          <select
+            className="select"
+            style={{ width: 110 }}
+            disabled={!active}
+            value={value === true ? 'on' : 'off'}
+            onChange={(e) => onChange({ [spec.field]: e.target.value === 'on' })}
+          >
+            <option value="on">on</option>
+            <option value="off">off</option>
+          </select>
+        )}
+
+        {(spec.kind === 'text' || spec.kind === 'nullableText') && (
+          <input
+            className="input"
+            style={{ width: 260 }}
+            disabled={!active}
+            placeholder={spec.kind === 'nullableText' ? '(leave OBS to decide)' : ''}
+            value={typeof value === 'string' ? value : ''}
+            onChange={(e) =>
+              onChange({
+                [spec.field]:
+                  spec.kind === 'nullableText' && e.target.value === '' ? null : e.target.value
+              })
+            }
+          />
+        )}
+
+        {spec.kind === 'color' && (
+          <input
+            className="input"
+            type="color"
+            style={{ width: 60, padding: 2, height: 28 }}
+            disabled={!active}
+            value={typeof value === 'string' ? value : '#4f9dff'}
+            onChange={(e) => onChange({ color: e.target.value })}
+          />
+        )}
+
+        {spec.kind === 'install' && (
+          <select
+            className="select"
+            style={{ width: 260 }}
+            disabled={!active}
+            value={typeof value === 'string' ? value : ''}
+            onChange={(e) => onChange({ installId: e.target.value })}
+          >
+            {installs.map((install) => (
+              <option key={install.id} value={install.id}>
+                {install.label}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {spec.kind === 'lines' && (
+          <textarea
+            className="textarea"
+            style={{ width: 260, minHeight: 52 }}
+            rows={2}
+            disabled={!active}
+            value={Array.isArray(value) ? value.join('\n') : ''}
+            onChange={(e) =>
+              onChange({
+                extraArgs: e.target.value.split('\n').filter((line) => line.trim() !== '')
+              })
+            }
+          />
+        )}
+      </div>
+
+      {spec.hint && active && (
+        <span className="field__hint" style={{ marginLeft: 22 }}>
+          {spec.hint}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function nameOf(instances: Array<{ id: string; name: string }>, id: string): string {
+  return instances.find((instance) => instance.id === id)?.name ?? id
 }
 
 /* ------------------------------------------------------------------ */

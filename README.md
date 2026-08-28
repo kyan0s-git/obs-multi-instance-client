@@ -25,6 +25,13 @@ stagger between launches. Every launch flag OBS supports is exposed — profile,
 scene collection, starting scene, studio mode, auto-record, safe mode — and the
 exact command line is inspectable before you run it.
 
+**Mass update.** Change any instance setting across a selection in one pass —
+the OBS installation they run from, launch flags, starting profile and scene
+collection, roles and colours. Only the fields you tick are written, so
+retargeting twelve instances at a new OBS build does not also flatten the flags
+each of them was set up with. Every run is previewed first: which instance
+changes what, which ones already match, and which will be re-provisioned.
+
 **Multiview.** Watch every instance's program output in one grid, and drive them
 from the same screen: switch scenes, toggle source visibility, ride the audio
 mixer, start and stop recording and streaming, take a studio-mode transition.
@@ -56,6 +63,17 @@ pushed into any subset of the fleet in one action.
 asset library into a single zip, hand it to a colleague or archive it with the
 show, and import it back into any instance. Importing runs through the same
 rewrites as a sync, so a restored profile still records to the right folder.
+
+---
+
+## Versioning
+
+Releases are SemVer with build metadata: `0.2.0+0828.03620f3` — version, then
+the build date as MMDD and the commit it came from. The metadata segment is
+after the `+` deliberately, since SemVer excludes it from precedence: two builds
+of `0.2.0` are the same release, while a log or a bug report still names the
+exact tree. The full string is in **Settings → About** and on the first line of
+every session log.
 
 ---
 
