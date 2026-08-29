@@ -37,8 +37,12 @@ from the same screen: switch scenes, toggle source visibility, ride the audio
 mixer, start and stop recording and streaming, take a studio-mode transition.
 
 **Window layout.** When you need the real OBS interface rather than a preview,
-arrange the actual OBS windows across your desktop in a grid, columns, rows,
-main-and-stack or cascade, on whichever display you choose.
+arrange the actual OBS windows in a grid, columns, rows, main-and-stack or
+cascade — across as many monitors as the rig has. Choose which displays to
+use and how instances are spread over them; each display can run its own
+layout, pick its own large pane, and tile under the taskbar or not. The whole
+arrangement saves as the workspace default, because a monitor layout belongs
+to the rig rather than to a session.
 
 **Telemetry.** FPS, frame render time, render and encoder frame drops, CPU and
 memory per instance, live bitrate, data written, disk headroom and stream
@@ -135,6 +139,12 @@ supports.
 | Windows | Portable (full copy) | A complete copy of the OBS installation per instance. Uses several hundred MB each, but survives the base install being upgraded or removed. |
 | macOS | Redirected `HOME` | The shared app bundle is launched with a per-instance `HOME`, which is where macOS builds look for Application Support. |
 | Linux | `XDG_CONFIG_HOME` | The shared binary is launched with a per-instance `XDG_CONFIG_HOME`, which is what libobs reads. |
+
+The Windows installer is the assisted kind rather than one-click, so it asks
+where to install. It installs for the current user by default and offers an
+all-users install. Where the *instances* live is separate and set in
+**Settings → workspace root**; it defaults to `~/OBS Fleet` and can be any
+folder, including another drive.
 
 Portable mode is only compiled into Windows builds of OBS (`ENABLE_PORTABLE_CONFIG`
 is off in the official macOS and Linux builds), which is why the environment
@@ -306,6 +316,20 @@ A twelve-instance fleet is a lot of polling, so a few things are deliberate:
   stacked.
 - **Asset listings are cached per folder** and invalidated by the watcher, with
   a cap on how many files a single attached folder contributes.
+- **Health is published only when a verdict moves.** It is recomputed every two
+  seconds for the life of the session; emitting unconditionally would cost an
+  IPC message and a re-render of every health consumer even with the fleet
+  idle and nothing wrong.
+- **Store snapshots are memoised per consumer.** Selectors are compared against
+  the state they were derived from, so an event that does not touch a slice
+  does not re-render the components reading it.
+- **Views load as separate chunks, then are warmed at idle.** The startup
+  bundle is roughly half what it would be, without a view switch ever being
+  the thing that waits.
+
+The install is trimmed too: Chromium's 55 locale packs come down to the one the
+UI actually speaks, and source maps, type declarations and duplicate library
+builds are kept out of the app archive — together about 40 MB.
 
 ---
 

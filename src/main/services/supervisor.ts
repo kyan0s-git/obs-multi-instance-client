@@ -17,7 +17,7 @@ import { findListenerPid, pidAlive, stopPid } from '../util/process.js'
 import { ensureDir } from '../util/fsx.js'
 import { log, errorMessage } from '../util/logger.js'
 import { AssetServer } from './asset-server.js'
-import { evaluateHealth } from './health.js'
+import { evaluateHealth, sameHealth } from './health.js'
 import { InstanceManager } from './instance-manager.js'
 import { Launcher, type LauncherExit } from './launcher.js'
 import { Multiview } from './multiview.js'
@@ -67,6 +67,8 @@ export class Supervisor extends EventEmitter {
   /** Pids of instances started before this session, adopted on startup. */
   private adoptedPids = new Map<string, number>()
   private healthTimer: NodeJS.Timeout | null = null
+  /** Last health payload sent to the renderer; see {@link publishHealth}. */
+  private lastHealth: InstanceHealth[] = []
   private started = false
 
   private broadcastRuntime = debounce(() => {
@@ -644,8 +646,21 @@ export class Supervisor extends EventEmitter {
     })
   }
 
+  /**
+   * Publishes health, but only when a verdict actually moved.
+   *
+   * This fires every two seconds for the life of the session. Emitting
+   * unconditionally means an idle fleet — nothing launched, nothing wrong —
+   * still costs an IPC message and a re-render of every health consumer,
+   * forever. Same reasoning as dropping a preview frame identical to the last
+   * one sent.
+   */
   private publishHealth(): void {
-    this.emit('health:changed', this.getHealth())
+    const health = this.getHealth()
+    if (sameHealth(this.lastHealth, health)) return
+
+    this.lastHealth = health
+    this.emit('health:changed', health)
   }
 
   /* ------------------------------------------------------------------ */
@@ -901,3 +916,4 @@ function requireString(value: unknown, field: string): string {
   }
   return value
 }
+

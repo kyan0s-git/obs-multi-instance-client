@@ -48,7 +48,8 @@ npm run dev         # hot-reloading development build
 npm run typecheck   # main (tsconfig.node.json) + renderer (tsconfig.web.json)
 npm test            # vitest: launch args, tiling, ini, health, sync, zip,
                     #         bundle, ui-layout, hash-cache, asset-server,
-                    #         bulk-update, version
+                    #         bulk-update, version, store-snapshot
+npm run logo        # regenerate build/logo.svg and build/icon.png
 npm run build       # typecheck + electron-vite build into out/
 npm run dist        # packaged installer for the current platform
 ```
@@ -154,6 +155,42 @@ bundles. The `typeof` guards are load-bearing: vitest does not go through that
 config, and an unreplaced identifier would be a ReferenceError rather than a
 missing string. `BUILD_ID` is SemVer with build metadata — `0.2.0+MMDD.sha` —
 and is what goes into bundle manifests and the first line of the session log.
+
+**`useSyncExternalStore` snapshots must be reference-stable.** The renderer
+store memoises each consumer's selector against the identity of the state it
+read (`state/snapshot-cache.ts`). Without it, a selector that derives a value —
+`state.workspace?.instances ?? []` is the one that shipped — allocates on every
+call, React decides the store never stops changing, throws "Maximum update
+depth exceeded", and the window renders *nothing at all*. This depends on
+`set()` replacing state rather than mutating it, so keep that true. Pinned by
+`tests/store-snapshot.test.ts`.
+
+**The smoke test checks that the UI mounted, not that the page loaded.**
+`did-finish-load` fires for the document whether or not React rendered, so it
+passed on every build of a blank app. `verifyRenderedUi` in `src/main/index.ts`
+counts elements under `#root` and fails on any renderer console error. Keep it
+that way — it is the only automated thing standing between a broken render and
+a release.
+
+**Tiling lives in `shared/`, not in `main/`.** The renderer's preview diagram
+runs the same `computeTiling` and `distributeAcrossDisplays` the main process
+runs. A preview drawn by a second implementation is a preview that can lie;
+there used to be one, and it was 95 lines.
+
+**The logo is generated, not committed by hand.** `scripts/logo.mjs` declares
+the geometry once; `npm run logo` writes both `build/logo.svg` and
+`build/icon.png` from it, and `components/Icons.tsx` carries the same shape
+scaled to a 24 grid. The rasteriser is hand-written for the same reason
+`util/zip.ts` is: an image toolchain is a large native dependency for three
+rounded rectangles, and Chromium's `capturePage` needs a display server, which
+is what a release runner lacks.
+
+**Packaging excludes are load-bearing for size.** `build.files` drops source
+maps, type declarations and `@msgpack`'s duplicate builds, and
+`electronLanguages` cuts Chromium's 55 locale packs to one. That is about 40 MB.
+If you add a dependency that resolves through a path one of those globs
+excludes, the packaged app breaks while `npm run dev` stays fine — check by
+running the packaged binary, not the source.
 
 **The preload is `.mjs`, not `.js`.** The package is `type: module`, so
 electron-vite emits ESM, and Electron loads an ESM preload only with

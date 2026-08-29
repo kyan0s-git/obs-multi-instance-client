@@ -248,3 +248,35 @@ export function worstLevel(issues: HealthIssue[]): HealthLevel {
 function formatMb(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`
 }
+
+/**
+ * Structural comparison of two health payloads.
+ *
+ * The supervisor recomputes health every two seconds for the life of the
+ * session. Publishing unconditionally means an idle fleet — nothing launched,
+ * nothing wrong — still costs an IPC message and a re-render of every health
+ * consumer, forever; comparing first makes the quiet case free.
+ *
+ * Cheaper than serialising both sides: the arrays are one short entry per
+ * instance, and the common case exits at the first differing field.
+ */
+export function sameHealth(before: InstanceHealth[], after: InstanceHealth[]): boolean {
+  if (before.length !== after.length) return false
+
+  for (let index = 0; index < before.length; index += 1) {
+    const a = before[index]
+    const b = after[index]
+    if (a.instanceId !== b.instanceId || a.level !== b.level) return false
+    if (a.issues.length !== b.issues.length) return false
+
+    for (let issue = 0; issue < a.issues.length; issue += 1) {
+      // The message carries live numbers, so it changes when a reading changes
+      // even though the code and level have not.
+      if (a.issues[issue].code !== b.issues[issue].code) return false
+      if (a.issues[issue].level !== b.issues[issue].level) return false
+      if (a.issues[issue].message !== b.issues[issue].message) return false
+    }
+  }
+
+  return true
+}

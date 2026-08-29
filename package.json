@@ -1,6 +1,6 @@
 {
   "name": "obs-multi-instance-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Fleet control for multiple simultaneous OBS Studio instances \u2014 built for broadcast and production teams.",
   "main": "./out/main/index.js",
   "author": {
@@ -57,7 +57,14 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/*.d.ts",
+      "!**/*.d.cts",
+      "!**/*.d.mts",
+      "!**/*.md",
+      "!**/node_modules/@msgpack/msgpack/src/**",
+      "!**/node_modules/@msgpack/msgpack/dist.es5+umd/**"
     ],
     "win": {
       "target": [
@@ -88,6 +95,9 @@
       "createStartMenuShortcut": true,
       "shortcutName": "OBS Fleet",
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "electronLanguages": [
+      "en-US"
+    ]
   }
 }

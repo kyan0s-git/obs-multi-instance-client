@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { InstanceRuntime, InstanceStats, SystemStats } from '../src/shared/types'
+import type { InstanceHealth, InstanceRuntime, InstanceStats, SystemStats } from '../src/shared/types'
 import { defaultThresholds } from '../src/main/services/defaults'
-import { evaluateHealth } from '../src/main/services/health'
+import { evaluateHealth, sameHealth } from '../src/main/services/health'
 
 function runtime(overrides: Partial<InstanceRuntime> = {}): InstanceRuntime {
   return {
@@ -190,5 +190,50 @@ describe('evaluateHealth', () => {
   it('stays quiet on a freshly launched instance with no samples yet', () => {
     const result = evaluateHealth(healthyInput({ latest: null, window: [] }))
     expect(result.level).toBe('unknown')
+  })
+})
+
+describe('sameHealth', () => {
+  const entry = (
+    instanceId: string,
+    level: InstanceHealth['level'],
+    issues: InstanceHealth['issues'] = []
+  ): InstanceHealth => ({ instanceId, level, issues })
+
+  it('treats structurally identical payloads as unchanged', () => {
+    const a = [entry('a', 'ok'), entry('b', 'warn', [{ level: 'warn', code: 'fps', message: '54 fps' }])]
+    const b = [entry('a', 'ok'), entry('b', 'warn', [{ level: 'warn', code: 'fps', message: '54 fps' }])]
+
+    expect(sameHealth(a, b)).toBe(true)
+  })
+
+  it('notices a level change', () => {
+    expect(sameHealth([entry('a', 'ok')], [entry('a', 'warn')])).toBe(false)
+  })
+
+  it('notices a new or resolved issue', () => {
+    const clean = [entry('a', 'ok')]
+    const broken = [entry('a', 'critical', [{ level: 'critical', code: 'disk', message: 'full' }])]
+
+    expect(sameHealth(clean, broken)).toBe(false)
+    expect(sameHealth(broken, clean)).toBe(false)
+  })
+
+  it('notices a reading that moved but kept its code', () => {
+    const before = [entry('a', 'warn', [{ level: 'warn', code: 'fps', message: '54 fps' }])]
+    const after = [entry('a', 'warn', [{ level: 'warn', code: 'fps', message: '48 fps' }])]
+
+    expect(sameHealth(before, after)).toBe(false)
+  })
+
+  it('notices an instance appearing or being removed', () => {
+    expect(sameHealth([entry('a', 'ok')], [entry('a', 'ok'), entry('b', 'ok')])).toBe(false)
+    expect(sameHealth([], [])).toBe(true)
+  })
+
+  it('notices the roster being reordered', () => {
+    expect(sameHealth([entry('a', 'ok'), entry('b', 'warn')], [entry('b', 'warn'), entry('a', 'ok')])).toBe(
+      false
+    )
   })
 })

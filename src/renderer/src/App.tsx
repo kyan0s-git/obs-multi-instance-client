@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import type { BulkAction, ObsInstance } from '@shared/types'
 import {
   BrandMark,
@@ -19,15 +19,38 @@ import {
 } from './components/Icons'
 import { HealthDot } from './components/ui'
 import { dismissToast, guard, initialiseStore, toast, useFleet } from './state/store'
-import AssetsView from './views/AssetsView'
-import DashboardView from './views/DashboardView'
-import InstancesView from './views/InstancesView'
-import LogsView from './views/LogsView'
-import MultiviewView from './views/MultiviewView'
-import SettingsView from './views/SettingsView'
-import StatsView from './views/StatsView'
-import SyncView from './views/SyncView'
-import WindowsView from './views/WindowsView'
+
+/**
+ * Views load as separate chunks, then are pulled in immediately afterwards.
+ *
+ * Splitting alone would trade a faster start for a stutter the first time an
+ * operator opens a view — which, on a control surface, lands mid-show rather
+ * than at a quiet moment. Warming every chunk once the first paint is done
+ * takes the startup win without ever making a view switch wait.
+ */
+const VIEW_LOADERS = {
+  dashboard: () => import('./views/DashboardView'),
+  multiview: () => import('./views/MultiviewView'),
+  windows: () => import('./views/WindowsView'),
+  instances: () => import('./views/InstancesView'),
+  sync: () => import('./views/SyncView'),
+  assets: () => import('./views/AssetsView'),
+  stats: () => import('./views/StatsView'),
+  logs: () => import('./views/LogsView'),
+  settings: () => import('./views/SettingsView')
+} as const
+
+const VIEWS = {
+  dashboard: lazy(VIEW_LOADERS.dashboard),
+  multiview: lazy(VIEW_LOADERS.multiview),
+  windows: lazy(VIEW_LOADERS.windows),
+  instances: lazy(VIEW_LOADERS.instances),
+  sync: lazy(VIEW_LOADERS.sync),
+  assets: lazy(VIEW_LOADERS.assets),
+  stats: lazy(VIEW_LOADERS.stats),
+  logs: lazy(VIEW_LOADERS.logs),
+  settings: lazy(VIEW_LOADERS.settings)
+} as const
 
 type ViewId =
   | 'dashboard'
@@ -93,6 +116,16 @@ export default function App(): JSX.Element {
     return () => dispose?.()
   }, [])
 
+  // Warm the remaining view chunks once the first paint is out of the way, so
+  // no view switch is ever the thing that waits on a disk read.
+  useEffect(() => {
+    const idle = window.requestIdleCallback?.bind(window) ?? ((cb: () => void) => setTimeout(cb, 400))
+    const handle = idle(() => {
+      for (const load of Object.values(VIEW_LOADERS)) void load()
+    })
+    return () => window.cancelIdleCallback?.(handle as number)
+  }, [])
+
   return (
     <div className="app">
       <Rail view={view} onNavigate={setView} />
@@ -100,15 +133,17 @@ export default function App(): JSX.Element {
       <main className="main">
         {ready ? (
           <div className="view">
-            {view === 'dashboard' && <DashboardView onNavigate={setView} />}
-            {view === 'multiview' && <MultiviewView />}
-            {view === 'windows' && <WindowsView />}
-            {view === 'instances' && <InstancesView />}
-            {view === 'sync' && <SyncView />}
-            {view === 'assets' && <AssetsView />}
-            {view === 'stats' && <StatsView />}
-            {view === 'logs' && <LogsView />}
-            {view === 'settings' && <SettingsView />}
+            <Suspense fallback={<div className="empty" />}>
+              {view === 'dashboard' && <VIEWS.dashboard onNavigate={setView} />}
+              {view === 'multiview' && <VIEWS.multiview />}
+              {view === 'windows' && <VIEWS.windows />}
+              {view === 'instances' && <VIEWS.instances />}
+              {view === 'sync' && <VIEWS.sync />}
+              {view === 'assets' && <VIEWS.assets />}
+              {view === 'stats' && <VIEWS.stats />}
+              {view === 'logs' && <VIEWS.logs />}
+              {view === 'settings' && <VIEWS.settings />}
+            </Suspense>
           </div>
         ) : (
           <div className="empty">
