@@ -1,4 +1,4 @@
-import type { TileLayout } from '@shared/types'
+import type { DisplayDistribution, TileLayout } from './types.js'
 
 export interface Rect {
   x: number
@@ -20,9 +20,9 @@ export interface TilingOptions {
 /**
  * Computes where each OBS window should go.
  *
- * Pure, so the geometry can be unit tested without a window server, and so
- * the same maths drives both the real tiling and the preview diagram in the
- * UI.
+ * Lives in `shared` and stays free of Node and DOM so the renderer's preview
+ * diagram runs the identical function the main process will run. A preview
+ * drawn by a second implementation is a preview that can lie.
  */
 export function computeTiling(options: TilingOptions): Rect[] {
   const { layout, count, gap, margin } = options
@@ -175,4 +175,76 @@ function cascade(area: Rect, count: number, gap: number): Rect[] {
     width,
     height
   }))
+}
+
+/* ------------------------------------------------------------------ */
+/* Multi-monitor                                                       */
+/* ------------------------------------------------------------------ */
+
+export interface DistributionOptions {
+  /** Instance ids, in the order the operator arranged them. */
+  instanceIds: string[]
+  /** Displays to spread across; `null` stands for the primary display. */
+  displayIds: Array<number | null>
+  distribution: DisplayDistribution
+  /** Cap per display for `sequential`. 0 means no cap. */
+  maxPerDisplay: number
+}
+
+export interface DisplayShare {
+  displayId: number | null
+  instanceIds: string[]
+}
+
+/**
+ * Decides which instances land on which display.
+ *
+ * Chunks are contiguous rather than round-robin. An operator numbers their
+ * instances and expects 1-4 on the left monitor and 5-8 on the right; dealing
+ * them out like cards would scatter that ordering across the desk and make
+ * the numbering useless as a way of finding a window.
+ *
+ * Pure, so the plan can be shown before anything moves.
+ */
+export function distributeAcrossDisplays(options: DistributionOptions): DisplayShare[] {
+  const { instanceIds, distribution, maxPerDisplay } = options
+  // No display chosen still means somewhere: the primary.
+  const displayIds = options.displayIds.length > 0 ? options.displayIds : [null]
+
+  if (instanceIds.length === 0) return []
+
+  if (distribution === 'sequential' && maxPerDisplay > 0) {
+    const shares: DisplayShare[] = []
+    let cursor = 0
+
+    for (const displayId of displayIds) {
+      if (cursor >= instanceIds.length) break
+      shares.push({ displayId, instanceIds: instanceIds.slice(cursor, cursor + maxPerDisplay) })
+      cursor += maxPerDisplay
+    }
+
+    // Anything past the last display's cap goes onto that display rather than
+    // being silently dropped: an unplaced window is worse than a crowded one.
+    if (cursor < instanceIds.length && shares.length > 0) {
+      shares[shares.length - 1].instanceIds.push(...instanceIds.slice(cursor))
+    }
+
+    return shares
+  }
+
+  // Balanced: the remainder is spread one each over the leading displays, so
+  // sizes differ by at most one.
+  const shares: DisplayShare[] = []
+  const base = Math.floor(instanceIds.length / displayIds.length)
+  const remainder = instanceIds.length % displayIds.length
+  let cursor = 0
+
+  for (let index = 0; index < displayIds.length; index += 1) {
+    const take = base + (index < remainder ? 1 : 0)
+    if (take === 0) continue
+    shares.push({ displayId: displayIds[index], instanceIds: instanceIds.slice(cursor, cursor + take) })
+    cursor += take
+  }
+
+  return shares
 }

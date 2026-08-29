@@ -519,18 +519,45 @@ export type TileLayout =
   | 'cascade'
   | 'stack'
 
-export interface TileRequest {
-  layout: TileLayout
-  /** Instance ids in the order they should be placed. */
-  instanceIds: string[]
-  /** Display to tile onto; `null` uses the primary display. */
+/**
+ * How instances are handed out to the chosen displays.
+ *
+ * There is no "mirror": a window exists in one place, so the same OBS window
+ * cannot be shown on two monitors at once. Use Multiview for that.
+ */
+export type DisplayDistribution = 'balanced' | 'sequential' | 'manual'
+
+/** One display's share of an arrangement. */
+export interface DisplayAssignment {
+  /** `null` targets the primary display. */
   displayId: number | null
+  /** Instance ids in the order they should be placed on this display. */
+  instanceIds: string[]
+  layout: TileLayout
   /** Inner gap between windows, in pixels. */
   gap: number
-  /** Outer margin from the display work area, in pixels. */
+  /** Outer margin from the tiling area, in pixels. */
   margin: number
   /** For `main-and-stack`: which instance gets the large pane. */
   mainInstanceId: string | null
+  /**
+   * Tile into the display's full bounds rather than its work area, i.e. under
+   * the taskbar or dock. Worth having for a monitor dedicated to OBS, and
+   * worth defaulting to off everywhere else.
+   */
+  fullBounds: boolean
+}
+
+/**
+ * An arrangement spanning any number of displays.
+ *
+ * Carries assignments rather than one display plus a layout because the
+ * interesting multi-monitor setups are not uniform: a control monitor running
+ * main-and-stack next to a wall monitor running an even grid is the normal
+ * case, not the exotic one.
+ */
+export interface TileRequest {
+  assignments: DisplayAssignment[]
 }
 
 export interface TileResult {
@@ -596,6 +623,26 @@ export interface WorkspaceSettings {
   logRateLimitPerSecond: number
   theme: 'dark' | 'midnight' | 'light'
   confirmDestructive: boolean
+  windowLayout: WindowLayoutSettings
+}
+
+/**
+ * Remembered defaults for the window arrangement page.
+ *
+ * A rig's monitor arrangement is a property of the rig, not of a session:
+ * having to re-pick four displays and re-set the gap every launch is exactly
+ * the kind of friction this application exists to remove.
+ */
+export interface WindowLayoutSettings {
+  layout: TileLayout
+  distribution: DisplayDistribution
+  gap: number
+  margin: number
+  fullBounds: boolean
+  /** Displays to arrange onto. Empty means "just the primary". */
+  displayIds: number[]
+  /** Cap per display for `sequential`. 0 means no cap. */
+  maxPerDisplay: number
 }
 
 export interface WorkspaceState {

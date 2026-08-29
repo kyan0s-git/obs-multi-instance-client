@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TileLayout } from '../src/shared/types'
-import { computeTiling, type Rect } from '../src/main/services/tiling'
+import { computeTiling, distributeAcrossDisplays, type Rect } from '../src/shared/tiling'
 
 const AREA: Rect = { x: 0, y: 0, width: 1920, height: 1080 }
 
@@ -123,5 +123,113 @@ describe('computeTiling', () => {
       expect(rect.x).toBeGreaterThanOrEqual(1920)
       expect(rect.x + rect.width).toBeLessThanOrEqual(1920 + 2560)
     }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+
+describe('distributeAcrossDisplays', () => {
+  const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `i${i + 1}`)
+
+  it('falls back to the primary display when none is chosen', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(3),
+      displayIds: [],
+      distribution: 'balanced',
+      maxPerDisplay: 0
+    })
+
+    expect(shares).toEqual([{ displayId: null, instanceIds: ['i1', 'i2', 'i3'] }])
+  })
+
+  it('splits evenly when the count divides', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(6),
+      displayIds: [1, 2, 3],
+      distribution: 'balanced',
+      maxPerDisplay: 0
+    })
+
+    expect(shares.map((share) => share.instanceIds.length)).toEqual([2, 2, 2])
+    expect(shares[0].displayId).toBe(1)
+  })
+
+  it('keeps each display’s share contiguous, so numbering still locates a window', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(8),
+      displayIds: [1, 2],
+      distribution: 'balanced',
+      maxPerDisplay: 0
+    })
+
+    expect(shares[0].instanceIds).toEqual(['i1', 'i2', 'i3', 'i4'])
+    expect(shares[1].instanceIds).toEqual(['i5', 'i6', 'i7', 'i8'])
+  })
+
+  it('spreads the remainder over the leading displays, never off by more than one', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(7),
+      displayIds: [1, 2, 3],
+      distribution: 'balanced',
+      maxPerDisplay: 0
+    })
+
+    expect(shares.map((share) => share.instanceIds.length)).toEqual([3, 2, 2])
+  })
+
+  it('drops displays that would receive nothing', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(2),
+      displayIds: [1, 2, 3, 4],
+      distribution: 'balanced',
+      maxPerDisplay: 0
+    })
+
+    expect(shares).toHaveLength(2)
+  })
+
+  it('fills to the cap before moving on when sequential', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(5),
+      displayIds: [1, 2, 3],
+      distribution: 'sequential',
+      maxPerDisplay: 2
+    })
+
+    expect(shares.map((share) => share.instanceIds)).toEqual([
+      ['i1', 'i2'],
+      ['i3', 'i4'],
+      ['i5']
+    ])
+  })
+
+  it('crowds the last display rather than leaving a window unplaced', () => {
+    const shares = distributeAcrossDisplays({
+      instanceIds: ids(7),
+      displayIds: [1, 2],
+      distribution: 'sequential',
+      maxPerDisplay: 2
+    })
+
+    expect(shares).toHaveLength(2)
+    expect(shares[1].instanceIds).toEqual(['i3', 'i4', 'i5', 'i6', 'i7'])
+  })
+
+  it('treats an uncapped sequential request as balanced', () => {
+    const options = { instanceIds: ids(6), displayIds: [1, 2], maxPerDisplay: 0 }
+    expect(distributeAcrossDisplays({ ...options, distribution: 'sequential' })).toEqual(
+      distributeAcrossDisplays({ ...options, distribution: 'balanced' })
+    )
+  })
+
+  it('returns nothing to do for an empty selection', () => {
+    expect(
+      distributeAcrossDisplays({
+        instanceIds: [],
+        displayIds: [1, 2],
+        distribution: 'balanced',
+        maxPerDisplay: 0
+      })
+    ).toEqual([])
   })
 })

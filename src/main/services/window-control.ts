@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 import { screen } from 'electron'
 import type { NativeWindow, Platform, TileRequest, TileResult } from '@shared/types'
 import { log, errorMessage } from '../util/logger.js'
-import { computeTiling, type Rect } from './tiling.js'
+import { computeTiling, type Rect } from '@shared/tiling.js'
 
 const run = promisify(execFile)
 const platform = process.platform as Platform
@@ -61,13 +61,21 @@ export class WindowControl {
   }
 
   /** Moves each instance's main window into its computed slot. */
+  /**
+   * Places windows for every display in the request.
+   *
+   * Assignments are applied in order and an instance named twice is placed
+   * once, by the first assignment that claims it — two displays fighting over
+   * one window would just leave it wherever the last write landed.
+   */
   async tile(request: TileRequest, pidToInstance: Map<number, string>): Promise<TileResult> {
     const result: TileResult = { moved: [], failed: [], warnings: [] }
+    const requested = request.assignments.flatMap((assignment) => assignment.instanceIds)
 
     const capability = await this.capabilities()
     if (!capability.available) {
       result.warnings.push(capability.detail)
-      for (const instanceId of request.instanceIds) {
+      for (const instanceId of requested) {
         result.failed.push({ instanceId, reason: 'Window control helper unavailable' })
       }
       return result
@@ -83,34 +91,43 @@ export class WindowControl {
       if (!existing || looksLikeMainWindow(window.title)) byInstance.set(window.instanceId, window)
     }
 
-    const placeable = request.instanceIds.filter((id) => byInstance.has(id))
-    for (const instanceId of request.instanceIds) {
-      if (!byInstance.has(instanceId)) {
-        result.failed.push({ instanceId, reason: 'No visible OBS window found' })
+    const claimed = new Set<string>()
+
+    for (const assignment of request.assignments) {
+      const placeable: string[] = []
+
+      for (const instanceId of assignment.instanceIds) {
+        if (claimed.has(instanceId)) continue
+        claimed.add(instanceId)
+
+        if (byInstance.has(instanceId)) placeable.push(instanceId)
+        else result.failed.push({ instanceId, reason: 'No visible OBS window found' })
       }
-    }
-    if (placeable.length === 0) return result
 
-    const area = this.workArea(request.displayId)
-    const rects = computeTiling({
-      layout: request.layout,
-      count: placeable.length,
-      area,
-      gap: request.gap,
-      margin: request.margin,
-      mainIndex: request.mainInstanceId ? placeable.indexOf(request.mainInstanceId) : 0
-    })
+      if (placeable.length === 0) continue
 
-    for (let index = 0; index < placeable.length; index += 1) {
-      const instanceId = placeable[index]
-      const window = byInstance.get(instanceId)!
-      const rect = rects[index]
+      const area = this.displayArea(assignment.displayId, assignment.fullBounds)
+      const rects = computeTiling({
+        layout: assignment.layout,
+        count: placeable.length,
+        area,
+        gap: assignment.gap,
+        margin: assignment.margin,
+        mainIndex: assignment.mainInstanceId
+          ? Math.max(0, placeable.indexOf(assignment.mainInstanceId))
+          : 0
+      })
 
-      try {
-        await this.moveWindow(window, rect)
-        result.moved.push({ instanceId, handle: window.handle })
-      } catch (err) {
-        result.failed.push({ instanceId, reason: errorMessage(err) })
+      for (let index = 0; index < placeable.length; index += 1) {
+        const instanceId = placeable[index]
+        const window = byInstance.get(instanceId)!
+
+        try {
+          await this.moveWindow(window, rects[index])
+          result.moved.push({ instanceId, handle: window.handle })
+        } catch (err) {
+          result.failed.push({ instanceId, reason: errorMessage(err) })
+        }
       }
     }
 
@@ -161,12 +178,19 @@ export class WindowControl {
     }
   }
 
-  private workArea(displayId: number | null): Rect {
+  /**
+   * The rectangle to tile into.
+   *
+   * A display that was unplugged between planning and applying falls back to
+   * the primary rather than throwing: the operator asked for windows to be
+   * arranged, and putting them somewhere visible beats an error.
+   */
+  private displayArea(displayId: number | null, fullBounds: boolean): Rect {
     const display =
       (displayId !== null
         ? screen.getAllDisplays().find((candidate) => candidate.id === displayId)
         : undefined) ?? screen.getPrimaryDisplay()
-    const { x, y, width, height } = display.workArea
+    const { x, y, width, height } = fullBounds ? display.bounds : display.workArea
     return { x, y, width, height }
   }
 

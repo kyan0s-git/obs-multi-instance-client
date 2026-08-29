@@ -318,6 +318,14 @@ textarea {
   padding: 0;
 }
 
+/* One display's block inside the window arrangement plan. */
+.panel__inset {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

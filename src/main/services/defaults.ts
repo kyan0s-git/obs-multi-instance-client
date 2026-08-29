@@ -4,6 +4,7 @@ import type {
   HealthThresholds,
   InstanceLaunchOptions,
   MultiviewSettings,
+  WindowLayoutSettings,
   WorkspaceSettings
 } from '@shared/types'
 
@@ -72,6 +73,25 @@ export function defaultMultiview(): MultiviewSettings {
   return { enabled: true, fps: 2, quality: 480, source: 'program' }
 }
 
+/**
+ * Defaults for the window arrangement page.
+ *
+ * `displayIds` is empty rather than pre-filled with every display: arranging
+ * onto monitors the operator has not chosen would fling OBS windows across a
+ * desk on the first click. Empty means the primary, and they opt in to more.
+ */
+export function defaultWindowLayout(): WindowLayoutSettings {
+  return {
+    layout: 'grid',
+    distribution: 'balanced',
+    gap: 6,
+    margin: 0,
+    fullBounds: false,
+    displayIds: [],
+    maxPerDisplay: 0
+  }
+}
+
 /** Default workspace root: `~/OBS Fleet`, kept outside the app bundle. */
 export function defaultWorkspaceRoot(): string {
   return path.join(os.homedir(), 'OBS Fleet')
@@ -95,7 +115,8 @@ export function defaultSettings(): WorkspaceSettings {
     assetMounts: [],
     logRateLimitPerSecond: 40,
     theme: 'dark',
-    confirmDestructive: true
+    confirmDestructive: true,
+    windowLayout: defaultWindowLayout()
   }
 }
 
@@ -108,7 +129,14 @@ export function mergeSettings(partial: Partial<WorkspaceSettings> | null): Works
     ...partial,
     multiview: { ...base.multiview, ...(partial.multiview ?? {}) },
     thresholds: { ...base.thresholds, ...(partial.thresholds ?? {}) },
-    assetMounts: Array.isArray(partial.assetMounts) ? partial.assetMounts : base.assetMounts
+    assetMounts: Array.isArray(partial.assetMounts) ? partial.assetMounts : base.assetMounts,
+    windowLayout: {
+      ...base.windowLayout,
+      ...(partial.windowLayout ?? {}),
+      displayIds: Array.isArray(partial.windowLayout?.displayIds)
+        ? partial.windowLayout.displayIds
+        : base.windowLayout.displayIds
+    }
   }
 }
 

@@ -232,15 +232,21 @@ export const IconCheck = (p: IconProps): JSX.Element => (
   </Icon>
 )
 
-/** App mark: four panes with one lit, i.e. a fleet with one on air. */
+/**
+ * App mark: one program pane and the fleet stacked beside it.
+ *
+ * The same geometry as `scripts/logo.mjs`, scaled from its 512 grid to 24 so
+ * the mark in the title bar and the icon on the taskbar are the same shape.
+ * Fills come from theme tokens rather than the icon's literal colours, so it
+ * stays legible if the surface it sits on changes.
+ */
 export const BrandMark = (p: IconProps): JSX.Element => {
   const { size = 22, ...rest } = p
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" {...rest}>
-      <rect x="1.5" y="2.5" width="9.5" height="8" rx="1.5" fill="var(--live)" />
-      <rect x="13" y="2.5" width="9.5" height="8" rx="1.5" fill="var(--line-strong)" />
-      <rect x="1.5" y="13.5" width="9.5" height="8" rx="1.5" fill="var(--line-strong)" />
-      <rect x="13" y="13.5" width="9.5" height="8" rx="1.5" fill="var(--accent)" />
+      <rect x="3" y="4.5" width="10.7" height="15" rx="1.4" fill="var(--accent)" />
+      <rect x="15" y="4.5" width="6" height="6.85" rx="1.15" fill="var(--line-strong)" />
+      <rect x="15" y="12.65" width="6" height="6.85" rx="1.15" fill="var(--line)" />
     </svg>
   )
 }

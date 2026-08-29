@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="OBS Fleet">
+  <defs>
+    <linearGradient id="fleet-plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161d27" />
+      <stop offset="1" stop-color="#0b0f15" />
+    </linearGradient>
+    <linearGradient id="fleet-tile-0" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6cb0ff" />
+      <stop offset="1" stop-color="#3d84e6" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#fleet-plate)" />
+  <rect x="64" y="96" width="228" height="320" rx="30" fill="url(#fleet-tile-0)" />
+  <rect x="320" y="96" width="128" height="146" rx="24" fill="#42566f" />
+  <rect x="320" y="270" width="128" height="146" rx="24" fill="#2c3a4a" />
+</svg>

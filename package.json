@@ -1,7 +1,7 @@
 {
   "name": "obs-multi-instance-client",
   "version": "0.2.0",
-  "description": "Fleet control for multiple simultaneous OBS Studio instances — built for broadcast and production teams.",
+  "description": "Fleet control for multiple simultaneous OBS Studio instances \u2014 built for broadcast and production teams.",
   "main": "./out/main/index.js",
   "author": {
     "name": "kyan0s",
@@ -15,6 +15,7 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
+    "logo": "node scripts/render-logo.mjs",
     "start": "electron-vite preview",
     "build": "npm run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
@@ -77,6 +78,16 @@
         "deb"
       ],
       "category": "AudioVideo"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OBS Fleet",
+      "deleteAppDataOnUninstall": false
     }
   }
 }
