@@ -3,7 +3,10 @@
   "version": "0.2.0",
   "description": "Fleet control for multiple simultaneous OBS Studio instances — built for broadcast and production teams.",
   "main": "./out/main/index.js",
-  "author": "kyan0s",
+  "author": {
+    "name": "kyan0s",
+    "email": "91159868+kyan0s-git@users.noreply.github.com"
+  },
   "license": "GPL-2.0-or-later",
   "private": true,
   "type": "module",

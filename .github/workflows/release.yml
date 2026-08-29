@@ -150,11 +150,20 @@ jobs:
 
       - run: npm ci
 
+      # electron-builder packages what is already in out/; it does not run the
+      # bundler itself. Without this it fails on the asar sanity check looking
+      # for an entry file that was never produced.
+      - name: Build
+        run: npx electron-vite build
+        env:
+          # The bundles stamp themselves with this commit; see
+          # electron.vite.config.ts. The runner sets it, named here because the
+          # build's output depends on it.
+          GITHUB_SHA: ${{ github.sha }}
+
       - name: Package
         run: npx electron-builder --publish never
         env:
-          # The build stamps itself with this commit; see electron.vite.config.ts.
-          GITHUB_SHA: ${{ github.sha }}
           # There are no signing certificates in this repository, and
           # auto-discovery would otherwise fail the macOS build outright.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
