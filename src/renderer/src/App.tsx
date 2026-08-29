@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BulkAction } from '@shared/types'
+import type { BulkAction, ObsInstance } from '@shared/types'
 import {
   BrandMark,
   IconBroadcast,
@@ -71,6 +71,14 @@ const VIEW_TITLES: Record<ViewId, { title: string; sub: string }> = {
   settings: { title: 'Settings', sub: 'Workspace, ports, thresholds and appearance' }
 }
 
+/**
+ * Shared empty list for the chrome that renders before the workspace loads.
+ *
+ * A literal `[]` here is a new array on every read, which is exactly what the
+ * store's snapshot cache must not be handed. See `createSnapshotCache`.
+ */
+const NO_INSTANCES: ObsInstance[] = []
+
 export default function App(): JSX.Element {
   const [view, setView] = useState<ViewId>('dashboard')
   const ready = useFleet((state) => state.ready)
@@ -125,7 +133,7 @@ function Rail({
   view: ViewId
   onNavigate: (view: ViewId) => void
 }): JSX.Element {
-  const instances = useFleet((state) => state.workspace?.instances ?? [])
+  const instances = useFleet((state) => state.workspace?.instances ?? NO_INSTANCES)
   const runtimes = useFleet((state) => state.runtimes)
   const assetUrl = useFleet((state) => state.workspace?.settings.assetServerPort)
 
@@ -187,7 +195,7 @@ function Rail({
 /* ------------------------------------------------------------------ */
 
 function TopBar({ view }: { view: ViewId }): JSX.Element {
-  const instances = useFleet((state) => state.workspace?.instances ?? [])
+  const instances = useFleet((state) => state.workspace?.instances ?? NO_INSTANCES)
   const runtimes = useFleet((state) => state.runtimes)
   const health = useFleet((state) => state.health)
   const [busy, setBusy] = useState<string | null>(null)

@@ -19,6 +19,18 @@ const smokeTest = process.env.OBSFLEET_SMOKE_TEST === '1'
 /** Quitting must never hang, even if a service refuses to close. */
 const SHUTDOWN_TIMEOUT_MS = 8000
 
+/** `console-message` levels: 0 verbose, 1 info, 2 warning, 3 error. */
+const CONSOLE_LEVEL_ERROR = 3
+
+/** React mounts from an effect, so the DOM is empty for a tick after load. */
+const SMOKE_RENDER_GRACE_MS = 2500
+
+/**
+ * Floor for a rendered UI. The navigation rail and top bar alone are well past
+ * this, so it catches an empty tree without pinning the check to the layout.
+ */
+const SMOKE_MIN_ELEMENTS = 10
+
 let mainWindow: BrowserWindow | null = null
 let supervisor: Supervisor | null = null
 let shuttingDown = false
@@ -101,9 +113,16 @@ function createWindow(): void {
   mainWindow.once('ready-to-show', () => mainWindow?.show())
 
   if (smokeTest) {
+    // `did-finish-load` fires for the document, not for the UI: a renderer
+    // that throws on its first render still reports a finished load, and the
+    // window is blank. So the check looks at what actually mounted.
+    const rendererErrors: string[] = []
+    mainWindow.webContents.on('console-message', (_event, level, message) => {
+      if (level >= CONSOLE_LEVEL_ERROR) rendererErrors.push(message)
+    })
+
     mainWindow.webContents.once('did-finish-load', () => {
-      log.info('main', 'Smoke test: renderer loaded successfully')
-      app.quit()
+      if (mainWindow) void verifyRenderedUi(mainWindow, rendererErrors)
     })
     mainWindow.webContents.once('did-fail-load', (_event, code, description) => {
       log.error('main', `Smoke test: renderer failed to load (${code}) ${description}`)
@@ -127,6 +146,47 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+}
+
+/**
+ * Fails the smoke test unless the renderer actually put something on screen.
+ *
+ * The failure this exists for is a renderer that loads its bundle, throws
+ * during the first render and mounts nothing — indistinguishable from success
+ * if you only watch load events, and indistinguishable from a broken install
+ * if you are the person looking at the blank window.
+ */
+async function verifyRenderedUi(window: BrowserWindow, rendererErrors: string[]): Promise<void> {
+  try {
+    await new Promise((resolve) => setTimeout(resolve, SMOKE_RENDER_GRACE_MS))
+
+    // Descendants, not direct children: a tree that mounts an empty shell
+    // and renders nothing inside it is still a blank window.
+    const mounted: number = await window.webContents.executeJavaScript(
+      'document.querySelectorAll("#root *").length'
+    )
+
+    if (mounted < SMOKE_MIN_ELEMENTS) {
+      log.error(
+        'main',
+        `Smoke test: the renderer mounted ${mounted} element(s) into #root, expected at least ${SMOKE_MIN_ELEMENTS}`
+      )
+      exitCode = 1
+    } else if (rendererErrors.length > 0) {
+      log.error(
+        'main',
+        `Smoke test: renderer reported ${rendererErrors.length} error(s), first: ${rendererErrors[0]}`
+      )
+      exitCode = 1
+    } else {
+      log.info('main', `Smoke test: renderer mounted ${mounted} element(s), no errors`)
+    }
+  } catch (err) {
+    log.error('main', `Smoke test: could not inspect the renderer: ${errorMessage(err)}`)
+    exitCode = 1
+  }
+
+  app.quit()
 }
 
 async function detectInstallsOnFirstRun(): Promise<void> {

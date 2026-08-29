@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from 'react'
+import { useRef, useSyncExternalStore } from 'react'
+import { createSnapshotCache, type SnapshotCache } from './snapshot-cache'
 import type {
   HtmlAsset,
   InstanceHealth,
@@ -89,11 +90,15 @@ function subscribe(listener: () => void): () => void {
  * and in one place.
  */
 export function useFleet<T>(selector: (state: FleetState) => T): T {
-  return useSyncExternalStore(
-    subscribe,
-    () => selector(state),
-    () => selector(state)
-  )
+  // The cache is per component instance, keyed on the identity of the state
+  // object the value was derived from. See `createSnapshotCache` for why it
+  // cannot be left out.
+  const cache = useRef<SnapshotCache<FleetState, T> | null>(null)
+  cache.current ??= createSnapshotCache<FleetState, T>()
+
+  const read = (): T => cache.current!.read(state, selector)
+
+  return useSyncExternalStore(subscribe, read, read)
 }
 
 export function getState(): FleetState {
