@@ -75,6 +75,19 @@ of `0.2.0` are the same release, while a log or a bug report still names the
 exact tree. The full string is in **Settings → About** and on the first line of
 every session log.
 
+Releases are cut by the **Release** workflow, which runs the full verification
+gate, packages installers for Windows, macOS and Linux, creates the annotated
+tag and publishes the release with those installers attached:
+
+```bash
+gh workflow run release.yml -f version=0.2.0    # or run it from the Actions tab
+```
+
+Pushing a `v*` tag by hand takes the same path. The workflow refuses to run if
+the requested version disagrees with `package.json`, since the version is
+compiled into the bundles and a mismatch would ship installers that misreport
+themselves. Installers are unsigned.
+
 ---
 
 ## Requirements

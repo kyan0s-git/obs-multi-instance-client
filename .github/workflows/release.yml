@@ -1,0 +1,242 @@
+name: Release
+
+# Two ways in, one path out.
+#
+#   workflow_dispatch  cut a release from the current default branch; the
+#                      annotated tag is created here, so a release never
+#                      exists without one.
+#   push: tags         a tag pushed by hand still produces the same release,
+#                      rather than silently doing nothing.
+#
+# Either way the verification gate runs first: a release that cannot pass CI
+# is worse than no release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (must match package.json)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ['v*']
+
+# Creating the tag and the release both write to the repository.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------
+  # Resolve the version once, and refuse to go further if the request
+  # disagrees with package.json. A tag that does not match the version
+  # baked into the bundles produces installers that lie about themselves.
+  # ------------------------------------------------------------------
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+      build_id: ${{ steps.resolve.outputs.build_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+            version="${version#v}"
+          fi
+
+          packaged=$(node -p "require('./package.json').version")
+          if [ "$version" != "$packaged" ]; then
+            echo "::error::Requested $version but package.json says $packaged." \
+                 "Bump package.json first — the version is compiled into the bundles."
+            exit 1
+          fi
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a SemVer version."
+            exit 1
+          fi
+
+          exists=false
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+            exists=true
+          fi
+
+          # Computed once here rather than per job: two jobs calling `date`
+          # either side of midnight UTC would otherwise disagree about MMDD.
+          build_id="$version+$(date -u +%m%d).$(git rev-parse --short=7 HEAD)"
+
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "tag_exists=$exists"
+            echo "build_id=$build_id"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing v$version as $build_id (tag already on origin: $exists)"
+
+  # ------------------------------------------------------------------
+  # The same gate CI runs. Duplicated deliberately: a release must not
+  # depend on someone having looked at a green tick on an earlier commit.
+  # ------------------------------------------------------------------
+  verify:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npx electron-vite build
+
+      - name: Boot check
+        run: xvfb-run -a npx electron --no-sandbox .
+        env:
+          OBSFLEET_SMOKE_TEST: '1'
+
+  # ------------------------------------------------------------------
+  # Installers, one runner per platform. electron-builder is told not to
+  # publish: the release job below attaches everything in one go, so a
+  # half-uploaded release never appears while a slower runner is still
+  # packaging.
+  # ------------------------------------------------------------------
+  package:
+    needs: [resolve, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+          - os: windows-latest
+            name: windows
+          - os: macos-latest
+            name: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Package
+        run: npx electron-builder --publish never
+        env:
+          # The build stamps itself with this commit; see electron.vite.config.ts.
+          GITHUB_SHA: ${{ github.sha }}
+          # There are no signing certificates in this repository, and
+          # auto-discovery would otherwise fail the macOS build outright.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p dist-artifacts
+          # Installers only: electron-builder also leaves unpacked trees and
+          # its own metadata in release/, which have no business on a release.
+          find release -maxdepth 1 -type f \
+            \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \
+               -o -name '*.deb' -o -name '*.zip' \) \
+            -exec cp {} dist-artifacts/ \;
+          ls -lh dist-artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.name }}
+          path: dist-artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------
+  # Tag, then release. In that order, so the release always points at a
+  # tag that exists and at the exact tree that was just verified.
+  # ------------------------------------------------------------------
+  release:
+    needs: [resolve, verify, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create the annotated tag
+        if: needs.resolve.outputs.tag_exists == 'false'
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
+        run: |
+          git config user.name 'kyan0s-git'
+          git config user.email '91159868+kyan0s-git@users.noreply.github.com'
+          # Annotated rather than lightweight: `git describe` and the build
+          # metadata both want a tag object with a date and a message.
+          git tag -a "$TAG" -m "OBS Fleet $VERSION" -m "Build: $BUILD_ID"
+          git push origin "$TAG"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: installers-*
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          cat > notes.md <<NOTES
+          Build \`$BUILD_ID\` — SemVer core, then the build date as MMDD and the
+          commit it was built from. The same string is in **Settings → About**
+          and on the first line of every session log.
+
+          Installers below are unsigned: Windows SmartScreen and macOS Gatekeeper
+          both want an explicit override on first run.
+          NOTES
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-running a release replaces its assets rather than failing.
+            gh release edit "$TAG" --title "OBS Fleet $VERSION" --notes-file notes.md
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            create=(--title "OBS Fleet $VERSION" --notes-file notes.md --generate-notes)
+            if [ "$PRERELEASE" = "true" ]; then
+              create+=(--prerelease)
+            fi
+            gh release create "$TAG" "${create[@]}" artifacts/*
+          fi
+
+          gh release view "$TAG"
