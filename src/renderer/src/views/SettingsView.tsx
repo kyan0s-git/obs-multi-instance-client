@@ -1,8 +1,25 @@
 import { useEffect, useState } from 'react'
-import type { HealthThresholds, WorkspaceSettings } from '@shared/types'
+import type {
+  ConfigImportOptions,
+  ConfigImportPlan,
+  FleetUpdate,
+  HealthThresholds,
+  ObsInstall,
+  RemovalPlan,
+  WorkspaceSettings
+} from '@shared/types'
 import { APP_VERSION, BUILD_COMMIT, BUILD_DATE, BUILD_ID } from '@shared/version'
-import { IconFolder, IconPlus, IconRefresh, IconTrash, IconWarning } from '../components/Icons'
-import { Callout, Check, Chip, Field, Panel } from '../components/ui'
+import {
+  IconDownload,
+  IconExternal,
+  IconFolder,
+  IconPlus,
+  IconRefresh,
+  IconTrash,
+  IconWarning
+} from '../components/Icons'
+import { Callout, Check, Chip, Dialog, Field, Panel } from '../components/ui'
+import { RemovalDialog } from '../components/RemovalDialog'
 import { guard, toast, useFleet } from '../state/store'
 import { isolationLabel } from './InstancesView'
 
@@ -10,6 +27,81 @@ export default function SettingsView(): JSX.Element {
   const workspace = useFleet((state) => state.workspace)
   const [draft, setDraft] = useState<WorkspaceSettings | null>(workspace?.settings ?? null)
   const [saving, setSaving] = useState(false)
+
+  const [removingInstall, setRemovingInstall] = useState<ObsInstall | null>(null)
+  const [deleteFiles, setDeleteFiles] = useState(false)
+  const [removalPlan, setRemovalPlan] = useState<RemovalPlan | null>(null)
+  const [removalBusy, setRemovalBusy] = useState(false)
+
+  const [update, setUpdate] = useState<FleetUpdate | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const [importFile, setImportFile] = useState<string | null>(null)
+
+  // The plan is recomputed whenever the question changes, because "also delete
+  // the files" is a different question with a different answer.
+  useEffect(() => {
+    if (!removingInstall) {
+      setRemovalPlan(null)
+      return
+    }
+    let cancelled = false
+    setRemovalPlan(null)
+    void window.fleet
+      .planInstallRemoval(removingInstall.id, deleteFiles)
+      .then((plan) => !cancelled && setRemovalPlan(plan))
+    return () => {
+      cancelled = true
+    }
+  }, [removingInstall, deleteFiles])
+
+  const checkForUpdate = async (): Promise<void> => {
+    setChecking(true)
+    const result = await guard('Check for updates', () => window.fleet.checkFleetUpdate())
+    setChecking(false)
+    if (result) setUpdate(result)
+  }
+
+  const exportConfiguration = async (includeSecrets: boolean): Promise<void> => {
+    const result = await guard('Export configuration', () =>
+      window.fleet.exportConfiguration(includeSecrets)
+    )
+    if (result) {
+      toast(
+        includeSecrets ? 'warn' : 'success',
+        `Configuration written to ${result.path}`,
+        includeSecrets ? 'It contains websocket passwords. Treat the file as a credential.' : undefined
+      )
+    }
+  }
+
+  /**
+   * Import is a two-step: read the document, show what it would change, then
+   * apply. Taking someone else's configuration silently is how a fleet ends up
+   * pointed at a folder that does not exist on this machine.
+   */
+  const importConfiguration = async (): Promise<void> => {
+    const chosen = await guard('Open configuration', () => window.fleet.chooseConfiguration())
+    if (!chosen) return
+    setImportFile(chosen.path)
+  }
+
+  const confirmInstallRemoval = async (): Promise<void> => {
+    if (!removingInstall) return
+    setRemovalBusy(true)
+    const ok = await guard('Remove installation', () =>
+      window.fleet.removeInstall({
+        installId: removingInstall.id,
+        deleteFiles,
+        force: true
+      })
+    )
+    setRemovalBusy(false)
+    if (ok !== undefined) {
+      toast('success', `Removed ${removingInstall.label}`)
+      setRemovingInstall(null)
+    }
+  }
 
   useEffect(() => {
     if (workspace?.settings) setDraft(workspace.settings)
@@ -201,15 +293,11 @@ export default function SettingsView(): JSX.Element {
                     <td>
                       <button
                         className="btn btn--sm btn--ghost"
-                        disabled={inUse > 0}
-                        title={
-                          inUse > 0
-                            ? 'Instances still use this installation'
-                            : 'Remove this installation'
-                        }
-                        onClick={() =>
-                          void guard('Remove install', () => window.fleet.removeInstall(install.id))
-                        }
+                        title="Remove this installation"
+                        onClick={() => {
+                          setDeleteFiles(install.managed === true)
+                          setRemovingInstall(install)
+                        }}
                       >
                         <IconTrash size={12} />
                       </button>
@@ -433,6 +521,123 @@ export default function SettingsView(): JSX.Element {
         </div>
       </Panel>
 
+      <Panel
+        title="Fleet configuration"
+        actions={
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              className="btn btn--sm"
+              onClick={() => void importConfiguration()}
+            >
+              Import…
+            </button>
+            <button className="btn btn--sm" onClick={() => void exportConfiguration(false)}>
+              Export…
+            </button>
+          </div>
+        }
+      >
+        <div className="grid-2">
+          <div className="field__hint">
+            The whole client configuration — settings, thresholds, window layout and every
+            instance definition — as one small JSON document. Distinct from a Sync bundle, which
+            carries OBS's own profiles and scene collections and is far larger. Use this to set up
+            a second rig the same way, or to keep a fleet's arrangement in a show repository.
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <button className="btn btn--sm" onClick={() => void exportConfiguration(true)}>
+              Export including websocket passwords
+            </button>
+            <span className="field__hint">
+              Passwords are left out by default. An export that includes them is a credential:
+              anyone holding the file can control those instances.
+            </span>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
+        title="Instance defaults"
+        actions={
+          <button
+            className="btn btn--sm"
+            onClick={() =>
+              void guard('Apply defaults', async () => {
+                const outcomes = await window.fleet.applyInstanceDefaults([])
+                const failed = outcomes.filter((outcome) => !outcome.ok).length
+                toast(
+                  failed === 0 ? 'success' : 'warn',
+                  `Applied defaults to ${outcomes.length - failed} of ${outcomes.length}`
+                )
+                return outcomes
+              })
+            }
+          >
+            Apply to all instances
+          </button>
+        }
+      >
+        <div className="field__hint">
+          New instances start from these launch options. Applying them to existing instances
+          overwrites their launch settings, which is the point when a rig's conventions have
+          drifted apart — but it does overwrite per-instance choices, so it asks nothing and does
+          exactly what it says. Individual fields can be changed for a subset from
+          Instances → Mass update instead.
+        </div>
+      </Panel>
+
+      <Panel
+        title="Updates"
+        actions={
+          <button className="btn btn--sm" disabled={checking} onClick={() => void checkForUpdate()}>
+            <IconRefresh size={12} /> {checking ? 'Checking…' : 'Check now'}
+          </button>
+        }
+      >
+        {update === null ? (
+          <div className="field__hint">
+            OBS Fleet does not check for updates on its own. This application supervises instances
+            that are frequently on air, and a control surface that replaces itself underneath a
+            running show is not something anyone asked for.
+          </div>
+        ) : update.error ? (
+          <Callout tone="warn" title="Could not check">
+            {update.error}
+          </Callout>
+        ) : update.updateAvailable ? (
+          <Callout tone="warn" title={`OBS Fleet ${update.latestVersion} is available`}>
+            <div className="row" style={{ gap: 8, marginTop: 8 }}>
+              {update.downloadUrl && (
+                <button
+                  className="btn btn--sm btn--primary"
+                  onClick={() => void window.fleet.openUrl(update.downloadUrl!)}
+                >
+                  <IconDownload size={12} /> Download {update.downloadName}
+                </button>
+              )}
+              {update.releaseUrl && (
+                <button
+                  className="btn btn--sm"
+                  onClick={() => void window.fleet.openUrl(update.releaseUrl!)}
+                >
+                  <IconExternal size={12} /> Release notes
+                </button>
+              )}
+            </div>
+            <div className="field__hint" style={{ marginTop: 8 }}>
+              Installing an update does not stop your instances — they keep running, and this
+              client re-adopts them when it starts again.
+            </div>
+          </Callout>
+        ) : (
+          <Callout>
+            {update.latestVersion
+              ? `Up to date — ${update.currentVersion} is the current release.`
+              : 'No releases published yet.'}
+          </Callout>
+        )}
+      </Panel>
+
       <Panel title="About">
         <div className="grid-2">
           <div className="field__hint">
@@ -454,6 +659,22 @@ export default function SettingsView(): JSX.Element {
           </div>
         </div>
       </Panel>
+
+      {importFile && (
+        <ConfigImportDialog file={importFile} onClose={() => setImportFile(null)} />
+      )}
+
+      {removingInstall && (
+        <RemovalDialog
+          plan={removalPlan}
+          loading={removalBusy}
+          deleteFiles={deleteFiles}
+          onDeleteFilesChange={removingInstall.managed ? setDeleteFiles : null}
+          confirmLabel="Remove installation"
+          onConfirm={() => void confirmInstallRemoval()}
+          onClose={() => setRemovingInstall(null)}
+        />
+      )}
 
       {dirty && (
         <div className="row">
@@ -519,4 +740,165 @@ function defaultIsolationForPlatform(): 'portable-linkfarm' | 'home-redirect' | 
   if (window.platform.os === 'win32') return 'portable-linkfarm'
   if (window.platform.os === 'darwin') return 'home-redirect'
   return 'xdg-config-home'
+}
+
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Shows what importing a configuration would do, then applies it.
+ *
+ * The options change the answer, so the plan is recomputed as they change
+ * rather than being fetched once and going stale — an operator who unticks
+ * "keep this machine's paths" needs to see the workspace root appear in the
+ * list of changes before they commit.
+ */
+function ConfigImportDialog({
+  file,
+  onClose
+}: {
+  file: string
+  onClose: () => void
+}): JSX.Element {
+  const [options, setOptions] = useState<ConfigImportOptions>({
+    settings: true,
+    instances: true,
+    existing: 'skip',
+    keepLocalPaths: true
+  })
+  const [plan, setPlan] = useState<ConfigImportPlan | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setPlan(null)
+    void window.fleet
+      .planConfigurationImport(file, options)
+      .then((next) => !cancelled && setPlan(next))
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [file, options])
+
+  const apply = async (): Promise<void> => {
+    setBusy(true)
+    const applied = await guard('Import configuration', () =>
+      window.fleet.applyConfigurationImport(file, options)
+    )
+    setBusy(false)
+    if (applied) {
+      toast('success', 'Configuration imported')
+      onClose()
+    }
+  }
+
+  const blocked = (plan?.blockers.length ?? 0) > 0
+
+  return (
+    <Dialog
+      title="Import fleet configuration"
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <div className="spacer" />
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn--primary"
+            disabled={busy || blocked || plan === null}
+            onClick={() => void apply()}
+          >
+            {busy ? 'Importing…' : 'Import'}
+          </button>
+        </>
+      }
+    >
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div className="faint mono" style={{ fontSize: 11, wordBreak: 'break-all' }}>
+          {file}
+        </div>
+
+        <div className="grid-2">
+          <Check
+            checked={options.settings}
+            onChange={(settings) => setOptions((current) => ({ ...current, settings }))}
+            label="Workspace settings"
+          />
+          <Check
+            checked={options.instances}
+            onChange={(instances) => setOptions((current) => ({ ...current, instances }))}
+            label="Instance definitions"
+          />
+          <Check
+            checked={options.keepLocalPaths}
+            onChange={(keepLocalPaths) => setOptions((current) => ({ ...current, keepLocalPaths }))}
+            label="Keep this machine's folders and ports"
+          />
+          <Check
+            checked={options.existing === 'update'}
+            onChange={(update) =>
+              setOptions((current) => ({ ...current, existing: update ? 'update' : 'skip' }))
+            }
+            label="Update instances that already exist"
+          />
+        </div>
+
+        {plan === null ? (
+          <div className="muted">Working out what this would change…</div>
+        ) : (
+          <>
+            {plan.blockers.map((blocker) => (
+              <Callout key={blocker} tone="danger">
+                {blocker}
+              </Callout>
+            ))}
+
+            <Field label="Result">
+              <div className="row row--wrap" style={{ gap: 6 }}>
+                <Chip>{plan.settingChanges.length} setting(s) change</Chip>
+                <Chip tone={plan.newInstances.length > 0 ? 'ok' : undefined}>
+                  {plan.newInstances.length} instance(s) created
+                </Chip>
+                {plan.updatedInstances.length > 0 && (
+                  <Chip tone="warn">{plan.updatedInstances.length} updated</Chip>
+                )}
+                {plan.skippedInstances.length > 0 && (
+                  <Chip>{plan.skippedInstances.length} left alone</Chip>
+                )}
+              </div>
+            </Field>
+
+            {plan.settingChanges.length > 0 && (
+              <Field label="Settings that change">
+                <table className="table">
+                  <tbody>
+                    {plan.settingChanges.map((change) => (
+                      <tr key={change.key}>
+                        <td>{change.key}</td>
+                        <td className="faint truncate" style={{ maxWidth: 200 }}>
+                          {change.from}
+                        </td>
+                        <td className="truncate" style={{ maxWidth: 200 }}>
+                          {change.to}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Field>
+            )}
+
+            {plan.warnings.map((warning) => (
+              <Callout key={warning} tone="warn">
+                {warning}
+              </Callout>
+            ))}
+          </>
+        )}
+      </div>
+    </Dialog>
+  )
 }

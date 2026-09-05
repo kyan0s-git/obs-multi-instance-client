@@ -19,6 +19,7 @@ import { log, errorMessage } from '../util/logger.js'
 import { AssetServer } from './asset-server.js'
 import { evaluateHealth, sameHealth } from './health.js'
 import { InstanceManager } from './instance-manager.js'
+import { ObsDownloader } from './obs-downloader.js'
 import { Launcher, type LauncherExit } from './launcher.js'
 import { Multiview } from './multiview.js'
 import * as control from './obs-control.js'
@@ -59,6 +60,7 @@ export class Supervisor extends EventEmitter {
   readonly assets = new AssetServer()
   readonly windows = new WindowControl()
   readonly instances = new InstanceManager(this.store)
+  readonly downloader = new ObsDownloader(() => this.store.getSettings().root)
 
   private runtime = new Map<string, InstanceRuntime>()
   private snapshots = new Map<string, InstanceSnapshot>()

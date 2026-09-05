@@ -9,9 +9,15 @@ import type {
   BrowserSourceSpec,
   BulkOutcome,
   BulkRequest,
+  ConfigExport,
+  ConfigImportOptions,
+  ConfigImportPlan,
   CreateInstanceRequest,
   CreateInstanceResult,
   DeployReport,
+  DownloadJob,
+  FleetUpdate,
+  InstanceAddons,
   HtmlAsset,
   InstanceAssets,
   InstanceHealth,
@@ -22,8 +28,15 @@ import type {
   IpcEvents,
   LogEntry,
   NativeWindow,
+  ObsCatalog,
   ObsInstall,
+  ObsInstallRequest,
   ObsInstance,
+  ObsPlugin,
+  ObsTheme,
+  ObsUpdateCandidate,
+  RemovalPlan,
+  RemoveInstallRequest,
   ExportBundleRequest,
   ImportBundleRequest,
   ImportPlan,
@@ -92,14 +105,52 @@ export interface FleetApi {
   detectInstalls(): Promise<ObsInstall[]>
   addInstall(root: string): Promise<ObsInstall>
   browseForInstall(): Promise<ObsInstall | null>
-  removeInstall(id: string): Promise<void>
+  removeInstall(request: RemoveInstallRequest): Promise<void>
   revalidateInstalls(): Promise<ObsInstall[]>
+  /** What removing this installation would break, before it is removed. */
+  planInstallRemoval(installId: string, deleteFiles: boolean): Promise<RemovalPlan>
+  /** Repoints instances at another installation, e.g. before removing one. */
+  reassignInstances(instanceIds: string[], installId: string): Promise<number>
+
+  /* ---- the OBS library ---- */
+  /** Releases available to download, newest first. */
+  obsCatalog(force?: boolean): Promise<ObsCatalog>
+  /** Downloads a release and registers it as a managed installation. */
+  installObsVersion(request: ObsInstallRequest): Promise<ObsInstall>
+  /** Managed installations with a newer release available. */
+  obsUpdates(): Promise<ObsUpdateCandidate[]>
+  downloadJobs(): Promise<DownloadJob[]>
+  cancelDownload(jobId: string): Promise<void>
+  clearFinishedDownloads(): Promise<void>
+
+  /* ---- plugins and themes ---- */
+  readAddons(instanceId: string): Promise<InstanceAddons>
+  installPluginArchive(instanceId: string): Promise<ObsPlugin[]>
+  removePlugin(instanceId: string, pluginId: string): Promise<void>
+  copyPluginsTo(sourceId: string, targetIds: string[]): Promise<BulkUpdateOutcome[]>
+  installThemeFile(instanceId: string): Promise<ObsTheme>
+  removeTheme(instanceId: string, themeId: string): Promise<void>
+  setTheme(instanceId: string, themeId: string): Promise<void>
+
+  /* ---- configuration transfer ---- */
+  exportConfiguration(includeSecrets: boolean): Promise<{ path: string } | null>
+  /** Opens a configuration document and reports what importing it would do. */
+  chooseConfiguration(): Promise<{ path: string; document: ConfigExport } | null>
+  planConfigurationImport(path: string, options: ConfigImportOptions): Promise<ConfigImportPlan>
+  applyConfigurationImport(path: string, options: ConfigImportOptions): Promise<ConfigImportPlan>
+  /** Pushes the workspace's default launch options onto existing instances. */
+  applyInstanceDefaults(instanceIds: string[]): Promise<BulkUpdateOutcome[]>
+
+  /* ---- self-update ---- */
+  checkFleetUpdate(): Promise<FleetUpdate>
 
   /* ---- instances ---- */
   createInstances(request: CreateInstanceRequest): Promise<CreateInstanceResult>
   cloneInstance(sourceId: string, newName: string): Promise<ObsInstance>
   updateInstance(id: string, patch: Partial<ObsInstance>): Promise<ObsInstance>
   removeInstance(id: string, deleteFiles: boolean): Promise<void>
+  /** What removing this instance would delete, before it is deleted. */
+  planInstanceRemoval(id: string, deleteFiles: boolean): Promise<RemovalPlan>
   reorderInstances(orderedIds: string[]): Promise<void>
   repairInstance(id: string): Promise<string[]>
   verifyInstance(id: string): Promise<string[]>
@@ -214,11 +265,33 @@ export const API_METHODS = [
   'addInstall',
   'browseForInstall',
   'removeInstall',
+  'planInstallRemoval',
+  'reassignInstances',
+  'obsCatalog',
+  'installObsVersion',
+  'obsUpdates',
+  'downloadJobs',
+  'cancelDownload',
+  'clearFinishedDownloads',
+  'readAddons',
+  'installPluginArchive',
+  'removePlugin',
+  'copyPluginsTo',
+  'installThemeFile',
+  'removeTheme',
+  'setTheme',
+  'exportConfiguration',
+  'chooseConfiguration',
+  'planConfigurationImport',
+  'applyConfigurationImport',
+  'applyInstanceDefaults',
+  'checkFleetUpdate',
   'revalidateInstalls',
   'createInstances',
   'cloneInstance',
   'updateInstance',
   'removeInstance',
+  'planInstanceRemoval',
   'reorderInstances',
   'repairInstance',
   'verifyInstance',

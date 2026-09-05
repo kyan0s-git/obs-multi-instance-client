@@ -116,7 +116,8 @@ export function defaultSettings(): WorkspaceSettings {
     logRateLimitPerSecond: 40,
     theme: 'dark',
     confirmDestructive: true,
-    windowLayout: defaultWindowLayout()
+    windowLayout: defaultWindowLayout(),
+    instanceDefaults: defaultLaunchOptions()
   }
 }
 
@@ -136,7 +137,8 @@ export function mergeSettings(partial: Partial<WorkspaceSettings> | null): Works
       displayIds: Array.isArray(partial.windowLayout?.displayIds)
         ? partial.windowLayout.displayIds
         : base.windowLayout.displayIds
-    }
+    },
+    instanceDefaults: mergeLaunchOptions(partial.instanceDefaults ?? null)
   }
 }
 

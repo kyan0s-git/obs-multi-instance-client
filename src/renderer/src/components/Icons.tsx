@@ -232,6 +232,22 @@ export const IconCheck = (p: IconProps): JSX.Element => (
   </Icon>
 )
 
+export const IconDownload = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M4 20h16" />
+  </Icon>
+)
+
+export const IconPackage = (p: IconProps): JSX.Element => (
+  <Icon {...p}>
+    <path d="M12 2.8 20 7v10l-8 4.2L4 17V7Z" />
+    <path d="M4 7l8 4.2L20 7" />
+    <path d="M12 11.2V21" />
+  </Icon>
+)
+
 /**
  * App mark: one program pane and the fleet stacked beside it.
  *

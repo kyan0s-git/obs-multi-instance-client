@@ -1,6 +1,7 @@
 import { useRef, useSyncExternalStore } from 'react'
 import { createSnapshotCache, type SnapshotCache } from './snapshot-cache'
 import type {
+  DownloadJob,
   HtmlAsset,
   InstanceHealth,
   InstanceRuntime,
@@ -31,6 +32,7 @@ export interface FleetState {
   snapshots: Record<string, InstanceSnapshot>
   previews: Record<string, PreviewFrame>
   htmlAssets: HtmlAsset[]
+  downloads: DownloadJob[]
   logs: LogEntry[]
   toasts: Toast[]
 }
@@ -49,6 +51,7 @@ let state: FleetState = {
   snapshots: {},
   previews: {},
   htmlAssets: [],
+  downloads: [],
   logs: [],
   toasts: []
 }
@@ -203,6 +206,12 @@ export async function initialiseStore(): Promise<() => void> {
   )
 
   unsubscribers.push(
+    window.fleet.on('downloads:changed', (downloads) => {
+      set({ downloads })
+    })
+  )
+
+  unsubscribers.push(
     window.fleet.on('assets:changed', (htmlAssets) => {
       set({ htmlAssets })
     })
@@ -231,14 +240,17 @@ export async function initialiseStore(): Promise<() => void> {
     })
   )
 
-  const [workspace, runtimes, health, stats, system, logs, htmlAssets] = await Promise.all([
+  const [workspace, runtimes, health, stats, system, logs, htmlAssets, downloads] = await Promise.all([
     window.fleet.getState(),
     window.fleet.getRuntimes(),
     window.fleet.getHealth(),
     window.fleet.getAllStatsHistory(),
     window.fleet.getSystemHistory(),
     window.fleet.getLogs(400),
-    window.fleet.listHtmlAssets().catch(() => [])
+    window.fleet.listHtmlAssets().catch(() => []),
+    // Downloads survive a renderer reload, so the list is fetched rather than
+    // assumed empty.
+    window.fleet.downloadJobs().catch(() => [])
   ])
 
   applyTheme(workspace.settings.theme)
@@ -251,7 +263,8 @@ export async function initialiseStore(): Promise<() => void> {
     stats,
     system,
     logs,
-    htmlAssets
+    htmlAssets,
+    downloads
   })
 
   return () => {

@@ -10,7 +10,13 @@ import {
   type FleetApi,
   type LaunchPreview
 } from '@shared/api'
-import type { IpcEventName, IpcEvents, InstanceAssets } from '@shared/types'
+import type {
+  BulkUpdateOutcome,
+  InstanceAssets,
+  IpcEventName,
+  IpcEvents,
+  ObsUpdateCandidate
+} from '@shared/types'
 import { BUILD_ID } from '@shared/version.js'
 import { randomUUID } from 'node:crypto'
 import { ensureDir, pathExists, removeQuiet, safeFolderName } from '../util/fsx.js'
@@ -28,6 +34,24 @@ import {
   planImport
 } from '../services/bundle.js'
 import { WORKSPACE_MOUNT_ID } from '../services/asset-server.js'
+import { planInstallRemoval, planInstanceRemoval, type RemovalContext } from '../services/removal.js'
+import { downloadSupport, isNewer, latestRelease } from '../services/obs-catalog.js'
+import {
+  copyPlugins,
+  installPlugin,
+  installTheme,
+  readAddons,
+  removePlugin as removeInstancePlugin,
+  removeTheme as removeInstanceTheme,
+  setTheme as setInstanceTheme
+} from '../services/obs-addons.js'
+import {
+  buildConfigExport,
+  planConfigImport,
+  readConfigExport,
+  settingsToApply
+} from '../services/config-transfer.js'
+import { checkForFleetUpdate } from '../services/fleet-update.js'
 import type { Supervisor } from '../services/supervisor.js'
 
 /** Methods of the API that main implements; the shape is checked against FleetApi. */
@@ -78,7 +102,8 @@ const FORWARDED: IpcEventName[] = [
   'preview:frames',
   'log:entry',
   'snapshot:changed',
-  'assets:changed'
+  'assets:changed',
+  'downloads:changed'
 ]
 
 function forwardEvents(supervisor: Supervisor, getWindow: () => BrowserWindow | null): void {
@@ -89,9 +114,13 @@ function forwardEvents(supervisor: Supervisor, getWindow: () => BrowserWindow | 
   }
 
   for (const event of FORWARDED) {
-    if (event === 'log:entry') continue
+    if (event === 'log:entry' || event === 'downloads:changed') continue
     supervisor.on(event, (payload) => send(event, payload as IpcEvents[typeof event]))
   }
+
+  // The downloader is its own emitter rather than a supervisor event, because
+  // progress fires far more often than anything else the supervisor relays.
+  supervisor.downloader.on('jobs', (jobs) => send('downloads:changed', jobs as IpcEvents['downloads:changed']))
 
   // Logs come straight off the logger so main-process messages emitted before
   // the supervisor exists still reach the UI.
@@ -106,7 +135,16 @@ function buildHandlers(
   supervisor: Supervisor,
   getWindow: () => BrowserWindow | null
 ): Handlers & FleetApiImplementation {
-  const { store, instances, launcher, pool, telemetry, multiview, assets, windows } = supervisor
+  const { store, instances, launcher, pool, telemetry, multiview, assets, windows, downloader } =
+    supervisor
+
+  /** Everything a removal plan needs to describe consequences. */
+  const removalContext = (): RemovalContext => ({
+    workspaceRoot: store.getSettings().root,
+    instances: store.getInstances(),
+    installs: store.getInstalls(),
+    runningIds: new Set(launcher.runningIds())
+  })
 
   const resolvePair = (id: string) => {
     const instance = store.getInstance(id)
@@ -194,7 +232,45 @@ function buildHandlers(
       return store.addInstall(install)
     },
 
-    removeInstall: async (id) => store.removeInstall(id),
+    removeInstall: async (request) => {
+      const install = store.getInstall(request.installId)
+      if (!install) return
+
+      const plan = await planInstallRemoval(request.installId, request.deleteFiles, removalContext())
+      if (plan.blockers.length > 0) throw new Error(plan.blockers.join(' '))
+
+      if (plan.affectedInstances.length > 0 && !request.force) {
+        throw new Error(
+          `${plan.affectedInstances.length} instance(s) still use this installation. ` +
+            'Confirm the removal to proceed anyway.'
+        )
+      }
+
+      await store.removeInstall(request.installId, request.force)
+
+      // Deleting comes last: an unregistered-but-present folder is recoverable,
+      // a deleted-but-still-registered one is not.
+      for (const deletion of plan.deletions) await removeQuiet(deletion.path)
+    },
+
+    planInstallRemoval: async (installId, deleteFiles) =>
+      planInstallRemoval(installId, deleteFiles, removalContext()),
+
+    reassignInstances: async (instanceIds, installId) => {
+      if (!store.getInstall(installId)) throw new Error('That installation is not registered')
+
+      let moved = 0
+      for (const id of instanceIds) {
+        const instance = store.getInstance(id)
+        if (!instance || instance.installId === installId) continue
+        await instances.update(id, { installId })
+        // The instance's portable links point into the old install, so the
+        // folder has to be re-provisioned against the new one.
+        await instances.repair(id).catch(() => undefined)
+        moved += 1
+      }
+      return moved
+    },
 
     revalidateInstalls: async () => {
       // `addInstall` merges onto the entry with the same root, so this
@@ -219,6 +295,9 @@ function buildHandlers(
       if (launcher.isRunning(id)) await supervisor.stop(id, false)
       await instances.remove(id, deleteFiles)
     },
+
+    planInstanceRemoval: async (id, deleteFiles) =>
+      planInstanceRemoval(id, deleteFiles, removalContext()),
     reorderInstances: async (orderedIds) => store.reorderInstances(orderedIds),
     repairInstance: async (id) => instances.repair(id),
     verifyInstance: async (id) => instances.verify(id),
@@ -564,6 +643,275 @@ function buildHandlers(
     tileWindows: async (request) => windows.tile(request, supervisor.pidMap()),
     focusWindow: async (id) => windows.focus(id, supervisor.pidMap()),
     minimizeWindows: async (ids) => windows.minimizeAll(ids, supervisor.pidMap()),
+
+    /* ---- the OBS library ---- */
+
+    obsCatalog: async (force) => {
+      const unsupportedReason = downloadSupport(process.platform as never)
+
+      // A platform that cannot install a download still gets the list: seeing
+      // which version is current is useful even when the button is absent.
+      try {
+        const releases = await downloader.releases(force ?? false)
+        return { fetchedAt: Date.now(), releases, unsupportedReason }
+      } catch (err) {
+        log.warn('obs', `Could not fetch the OBS release list: ${errorMessage(err)}`)
+        return { fetchedAt: Date.now(), releases: [], unsupportedReason }
+      }
+    },
+
+    installObsVersion: async (request) => {
+      const install = await downloader.install(request.version, request.label)
+      return store.addInstall(install)
+    },
+
+    obsUpdates: async () => {
+      const releases = await downloader.releases().catch(() => [])
+      const newest = latestRelease(releases)
+      if (!newest) return []
+
+      const candidates: ObsUpdateCandidate[] = []
+
+      for (const install of store.getInstalls()) {
+        // Only managed installs can be updated in place — the others belong to
+        // whatever installed them.
+        if (!install.managed) continue
+        if (!isNewer(newest.version, install.version)) continue
+
+        candidates.push({
+          installId: install.id,
+          installLabel: install.label,
+          currentVersion: install.version,
+          latestVersion: newest.version,
+          usedBy: store
+            .getInstances()
+            .filter((instance) => instance.installId === install.id)
+            .map((instance) => instance.name)
+        })
+      }
+
+      return candidates
+    },
+
+    downloadJobs: async () => downloader.listJobs(),
+    cancelDownload: async (jobId) => downloader.cancel(jobId),
+    clearFinishedDownloads: async () => downloader.clearFinished(),
+
+    /* ---- plugins and themes ---- */
+
+    readAddons: async (instanceId) => {
+      const pair = resolvePair(instanceId)
+      if (!pair) throw new Error('Instance not found')
+      return readAddons(pair.instance, pair.install)
+    },
+
+    installPluginArchive: async (instanceId) => {
+      const pair = resolvePair(instanceId)
+      if (!pair) throw new Error('Instance not found')
+
+      const window = getWindow()
+      if (!window) throw new Error('No window')
+
+      const result = await dialog.showOpenDialog(window, {
+        title: 'Install an OBS plugin',
+        filters: [{ name: 'Plugin archive', extensions: ['zip'] }],
+        properties: ['openFile']
+      })
+      if (result.canceled || !result.filePaths[0]) return []
+
+      warnAboutRunningTargets([instanceId])
+      return installPlugin(pair.instance, pair.install, result.filePaths[0])
+    },
+
+    removePlugin: async (instanceId, pluginId) => {
+      const pair = resolvePair(instanceId)
+      if (!pair) throw new Error('Instance not found')
+      warnAboutRunningTargets([instanceId])
+      await removeInstancePlugin(pair.instance, pair.install, pluginId)
+    },
+
+    copyPluginsTo: async (sourceId, targetIds) => {
+      const source = resolvePair(sourceId)
+      if (!source) throw new Error('Instance not found')
+
+      const targets = targetIds
+        .map(resolvePair)
+        .filter((pair): pair is NonNullable<typeof pair> => pair !== null)
+
+      warnAboutRunningTargets(targetIds)
+      const results = await copyPlugins(source, targets)
+      return results.map((result) => ({
+        instanceId: result.instanceId,
+        ok: result.ok,
+        changed: result.ok ? 1 : 0,
+        detail: result.detail
+      }))
+    },
+
+    installThemeFile: async (instanceId) => {
+      const pair = resolvePair(instanceId)
+      if (!pair) throw new Error('Instance not found')
+
+      const window = getWindow()
+      if (!window) throw new Error('No window')
+
+      const result = await dialog.showOpenDialog(window, {
+        title: 'Install an OBS theme',
+        filters: [{ name: 'OBS theme', extensions: ['obt', 'ovt', 'oha'] }],
+        properties: ['openFile']
+      })
+      if (result.canceled || !result.filePaths[0]) throw new Error('Cancelled')
+
+      return installTheme(pair.instance, pair.install, result.filePaths[0])
+    },
+
+    removeTheme: async (instanceId, themeId) => {
+      const pair = resolvePair(instanceId)
+      if (!pair) throw new Error('Instance not found')
+      await removeInstanceTheme(pair.instance, pair.install, themeId)
+    },
+
+    setTheme: async (instanceId, themeId) => {
+      const pair = resolvePair(instanceId)
+      if (!pair) throw new Error('Instance not found')
+      warnAboutRunningTargets([instanceId])
+      await setInstanceTheme(pair.instance, pair.install, themeId)
+    },
+
+    /* ---- configuration transfer ---- */
+
+    exportConfiguration: async (includeSecrets) => {
+      const window = getWindow()
+      if (!window) return null
+
+      const result = await dialog.showSaveDialog(window, {
+        title: 'Export fleet configuration',
+        defaultPath: `obs-fleet-config-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: 'OBS Fleet configuration', extensions: ['json'] }]
+      })
+      if (result.canceled || !result.filePath) return null
+
+      const document = buildConfigExport(store.getSettings(), store.getInstances(), {
+        includeSecrets,
+        appVersion: BUILD_ID
+      })
+      await fs.writeFile(result.filePath, JSON.stringify(document, null, 2), 'utf8')
+
+      if (includeSecrets) {
+        log.warn(
+          'config',
+          `${result.filePath} contains websocket passwords in plain text — treat it as a credential`
+        )
+      }
+
+      return { path: result.filePath }
+    },
+
+    chooseConfiguration: async () => {
+      const window = getWindow()
+      if (!window) return null
+
+      const result = await dialog.showOpenDialog(window, {
+        title: 'Import fleet configuration',
+        filters: [{ name: 'OBS Fleet configuration', extensions: ['json'] }],
+        properties: ['openFile']
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+
+      const document = readConfigExport(await fs.readFile(result.filePaths[0], 'utf8'))
+      return { path: result.filePaths[0], document }
+    },
+
+    planConfigurationImport: async (file, options) => {
+      const document = readConfigExport(await fs.readFile(file, 'utf8'))
+      return planConfigImport(
+        { settings: store.getSettings(), instances: store.getInstances() },
+        document,
+        options
+      )
+    },
+
+    applyConfigurationImport: async (file, options) => {
+      const document = readConfigExport(await fs.readFile(file, 'utf8'))
+      const plan = planConfigImport(
+        { settings: store.getSettings(), instances: store.getInstances() },
+        document,
+        options
+      )
+      if (plan.blockers.length > 0) throw new Error(plan.blockers.join(' '))
+
+      if (options.settings) {
+        await supervisor.applySettings(settingsToApply(document.settings, options))
+      }
+
+      if (options.instances) {
+        const byName = new Map(store.getInstances().map((instance) => [instance.name, instance]))
+
+        for (const entry of document.instances) {
+          const existing = byName.get(entry.name)
+
+          if (!existing) {
+            // Creation provisions a folder; the definition is applied on top so
+            // the imported launch options and role survive.
+            const created = await instances.create({
+              name: entry.name,
+              count: 1,
+              // Isolation is deliberately not taken from the document: the
+              // right strategy is a property of this platform, not of the
+              // machine the configuration came from.
+              installId: store.getInstalls()[0]?.id ?? '',
+              role: entry.role,
+              color: entry.color,
+              launch: entry.launch
+            })
+            const made = created.instances[0]
+            if (made) {
+              await instances.update(made.id, {
+                notes: entry.notes,
+                disabled: entry.disabled,
+                autoRestart: entry.autoRestart
+              })
+            }
+            continue
+          }
+
+          if (options.existing === 'update') {
+            await instances.update(existing.id, {
+              role: entry.role,
+              color: entry.color,
+              notes: entry.notes,
+              disabled: entry.disabled,
+              autoRestart: entry.autoRestart,
+              launch: entry.launch
+            })
+          }
+        }
+      }
+
+      return plan
+    },
+
+    applyInstanceDefaults: async (instanceIds) => {
+      const defaults = store.getSettings().instanceDefaults
+      const targets = instanceIds.length > 0 ? instanceIds : store.getInstances().map((i) => i.id)
+
+      const outcomes: BulkUpdateOutcome[] = []
+      for (const id of targets) {
+        try {
+          await instances.update(id, { launch: defaults })
+          outcomes.push({ instanceId: id, ok: true, changed: 1, detail: 'Defaults applied' })
+        } catch (err) {
+          outcomes.push({ instanceId: id, ok: false, changed: 0, detail: errorMessage(err) })
+        }
+      }
+
+      warnAboutRunningTargets(targets)
+      return outcomes
+    },
+
+    /* ---- self-update ---- */
+
+    checkFleetUpdate: async () => checkForFleetUpdate(process.platform as never),
 
     /* ---- logs ---- */
 

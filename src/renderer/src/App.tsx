@@ -8,6 +8,7 @@ import {
   IconGrid,
   IconInstances,
   IconLayers,
+  IconPackage,
   IconPause,
   IconPlay,
   IconRecord,
@@ -33,6 +34,7 @@ const VIEW_LOADERS = {
   multiview: () => import('./views/MultiviewView'),
   windows: () => import('./views/WindowsView'),
   instances: () => import('./views/InstancesView'),
+  library: () => import('./views/LibraryView'),
   sync: () => import('./views/SyncView'),
   assets: () => import('./views/AssetsView'),
   stats: () => import('./views/StatsView'),
@@ -45,6 +47,7 @@ const VIEWS = {
   multiview: lazy(VIEW_LOADERS.multiview),
   windows: lazy(VIEW_LOADERS.windows),
   instances: lazy(VIEW_LOADERS.instances),
+  library: lazy(VIEW_LOADERS.library),
   sync: lazy(VIEW_LOADERS.sync),
   assets: lazy(VIEW_LOADERS.assets),
   stats: lazy(VIEW_LOADERS.stats),
@@ -55,6 +58,7 @@ const VIEWS = {
 type ViewId =
   | 'dashboard'
   | 'instances'
+  | 'library'
   | 'multiview'
   | 'windows'
   | 'sync'
@@ -75,11 +79,15 @@ const NAV: NavEntry[] = [
   { id: 'multiview', label: 'Multiview', icon: <IconGrid />, section: 'Operate' },
   { id: 'windows', label: 'Window layout', icon: <IconWindows />, section: 'Operate' },
   { id: 'instances', label: 'Instances', icon: <IconInstances />, section: 'Configure' },
+  { id: 'library', label: 'OBS library', icon: <IconPackage />, section: 'Configure' },
   { id: 'sync', label: 'Sync', icon: <IconSync />, section: 'Configure' },
   { id: 'assets', label: 'HTML sources', icon: <IconLayers />, section: 'Configure' },
   { id: 'stats', label: 'Telemetry', icon: <IconChart />, section: 'Inspect' },
   { id: 'logs', label: 'Logs', icon: <IconTerminal />, section: 'Inspect' },
-  { id: 'settings', label: 'Settings', icon: <IconSettings />, section: 'Inspect' }
+  // Settings used to sit under "Inspect", which is the one place nobody looks
+  // for it. It configures the workspace, so it belongs with the other things
+  // that do.
+  { id: 'settings', label: 'Settings', icon: <IconSettings />, section: 'Configure' }
 ]
 
 const VIEW_TITLES: Record<ViewId, { title: string; sub: string }> = {
@@ -87,6 +95,10 @@ const VIEW_TITLES: Record<ViewId, { title: string; sub: string }> = {
   multiview: { title: 'Multiview', sub: 'Live program previews and scene control' },
   windows: { title: 'Window layout', sub: 'Arrange the real OBS windows on your desktop' },
   instances: { title: 'Instances', sub: 'Create, configure and maintain instance folders' },
+  library: {
+    title: 'OBS library',
+    sub: 'OBS versions on this machine, and the plugins and themes each instance loads'
+  },
   sync: { title: 'Sync', sub: 'Copy profiles and scene collections across the fleet' },
   assets: { title: 'HTML sources', sub: 'Shared overlay library and browser source deployment' },
   stats: { title: 'Telemetry', sub: 'Resource and encoder metrics over time' },
@@ -138,6 +150,7 @@ export default function App(): JSX.Element {
               {view === 'multiview' && <VIEWS.multiview />}
               {view === 'windows' && <VIEWS.windows />}
               {view === 'instances' && <VIEWS.instances />}
+              {view === 'library' && <VIEWS.library />}
               {view === 'sync' && <VIEWS.sync />}
               {view === 'assets' && <VIEWS.assets />}
               {view === 'stats' && <VIEWS.stats />}

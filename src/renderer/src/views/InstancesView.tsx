@@ -6,7 +6,8 @@ import type {
   CreateInstanceRequest,
   InstanceLaunchOptions,
   IsolationStrategy,
-  ObsInstance
+  ObsInstance,
+  RemovalPlan
 } from '@shared/types'
 import type { LaunchPreview } from '@shared/api'
 import {
@@ -24,6 +25,7 @@ import {
   IconWrench
 } from '../components/Icons'
 import { Callout, Check, Chip, Dialog, Empty, Field, Panel } from '../components/ui'
+import { RemovalDialog } from '../components/RemovalDialog'
 import { formatRelative } from '../lib/format'
 import { guard, toast, useFleet } from '../state/store'
 
@@ -1285,6 +1287,11 @@ function EditDialog({
   )
 }
 
+/**
+ * Deleting an instance, with the same plan-first confirmation used everywhere
+ * else. It replaces a hand-rolled copy of the pattern, so the two cannot
+ * disagree about what a deletion does.
+ */
 function DeleteConfirm({
   instance,
   onCancel,
@@ -1295,70 +1302,45 @@ function DeleteConfirm({
   onDone: () => void
 }): JSX.Element {
   const [deleteFiles, setDeleteFiles] = useState(false)
-  const [typed, setTyped] = useState('')
+  const [plan, setPlan] = useState<RemovalPlan | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const confirmed = !deleteFiles || typed === instance.name
+  useEffect(() => {
+    let cancelled = false
+    setPlan(null)
+    void window.fleet
+      .planInstanceRemoval(instance.id, deleteFiles)
+      .then((next) => !cancelled && setPlan(next))
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [instance.id, deleteFiles])
 
   return (
-    <Dialog
-      title={`Delete "${instance.name}"?`}
+    <RemovalDialog
+      plan={plan}
+      loading={busy}
+      deleteFiles={deleteFiles}
+      onDeleteFilesChange={setDeleteFiles}
+      confirmLabel="Delete instance"
       onClose={onCancel}
-      footer={
-        <>
-          <div className="spacer" />
-          <button className="btn" onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            className="btn btn--danger"
-            disabled={!confirmed || busy}
-            onClick={() =>
-              void (async () => {
-                setBusy(true)
-                const ok = await guard('Delete instance', () =>
-                  window.fleet.removeInstance(instance.id, deleteFiles)
-                )
-                setBusy(false)
-                if (ok !== undefined) {
-                  toast('success', `Deleted "${instance.name}"`)
-                  onDone()
-                }
-              })()
-            }
-          >
-            Delete
-          </button>
-        </>
+      onConfirm={() =>
+        void (async () => {
+          setBusy(true)
+          const ok = await guard('Delete instance', () =>
+            window.fleet.removeInstance(instance.id, deleteFiles)
+          )
+          setBusy(false)
+          if (ok !== undefined) {
+            toast('success', `Deleted "${instance.name}"`)
+            onDone()
+          }
+        })()
       }
-    >
-      <p className="muted">
-        Removing the instance from the fleet stops OBS Fleet managing it. The folder on disk is kept
-        unless you ask for it to be deleted.
-      </p>
-
-      <Check
-        checked={deleteFiles}
-        onChange={setDeleteFiles}
-        label="Also delete the instance folder, including its recordings and scene collections"
-      />
-
-      {deleteFiles && (
-        <>
-          <Callout tone="danger" title="This cannot be undone">
-            <span className="mono">{instance.dir}</span> and everything inside it will be removed.
-          </Callout>
-          <Field label={`Type "${instance.name}" to confirm`}>
-            <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} />
-          </Field>
-        </>
-      )}
-    </Dialog>
+    />
   )
 }
-
-/* ------------------------------------------------------------------ */
-
 function defaultIsolation(): IsolationStrategy {
   if (window.platform.os === 'win32') return 'portable-linkfarm'
   if (window.platform.os === 'darwin') return 'home-redirect'

@@ -632,6 +632,14 @@ export interface WorkspaceSettings {
   theme: 'dark' | 'midnight' | 'light'
   confirmDestructive: boolean
   windowLayout: WindowLayoutSettings
+  /**
+   * Launch options every new instance starts from.
+   *
+   * The point of centralising these is that a rig's conventions — always
+   * verbose, never auto-update, always this profile — should be stated once
+   * rather than re-entered per instance and drifting apart.
+   */
+  instanceDefaults: InstanceLaunchOptions
 }
 
 /**
@@ -904,6 +912,13 @@ export interface IpcEvents {
   'log:entry': LogEntry
   'snapshot:changed': InstanceSnapshot
   'assets:changed': HtmlAsset[]
+  /**
+   * Download progress, pushed rather than polled.
+   *
+   * An OBS release is a couple of hundred megabytes; a progress bar driven by
+   * polling either stutters or costs more than the download does.
+   */
+  'downloads:changed': DownloadJob[]
 }
 
 export type IpcEventName = keyof IpcEvents
@@ -1109,4 +1124,77 @@ export interface RemoveInstallRequest {
    * launch; that is a recoverable state, and refusing outright was worse.
    */
   force: boolean
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Configuration transfer                                              */
+/* ------------------------------------------------------------------ */
+
+export const CONFIG_FORMAT = 'obs-fleet-config'
+
+/**
+ * The whole client configuration as one document.
+ *
+ * Separate from a bundle: a bundle carries OBS's own files (profiles, scene
+ * collections, layouts) and is large; this carries how the fleet itself is
+ * set up, and is small enough to keep in a show repository or paste into a
+ * ticket.
+ */
+export interface ConfigExport {
+  format: typeof CONFIG_FORMAT
+  version: number
+  createdAt: number
+  createdBy: string
+  platform: string
+  settings: WorkspaceSettings
+  /** Instance definitions — not their OBS files. */
+  instances: ConfigInstanceEntry[]
+  /** True when websocket passwords are present in this document. */
+  includesSecrets: boolean
+}
+
+/** An instance's definition, without anything machine-specific. */
+export interface ConfigInstanceEntry {
+  name: string
+  role: string
+  color: string
+  notes: string
+  isolation: IsolationStrategy
+  disabled: boolean
+  autoRestart: boolean
+  order: number
+  launch: InstanceLaunchOptions
+  websocket: {
+    enabled: boolean
+    port: number
+    ipv4Only: boolean
+    /** Present only when the export was made with secrets included. */
+    password?: string
+  }
+}
+
+export interface ConfigImportOptions {
+  /** Apply the workspace settings from the document. */
+  settings: boolean
+  /** Create and update instances from the document. */
+  instances: boolean
+  /** What to do with an instance whose name already exists. */
+  existing: 'skip' | 'update'
+  /**
+   * Keep this machine's paths and ports rather than taking the document's.
+   *
+   * On by default: a configuration written on another machine names folders
+   * and ports that may not exist or may already be taken here.
+   */
+  keepLocalPaths: boolean
+}
+
+export interface ConfigImportPlan {
+  settingChanges: Array<{ key: string; from: string; to: string }>
+  newInstances: string[]
+  updatedInstances: string[]
+  skippedInstances: string[]
+  warnings: string[]
+  blockers: string[]
 }
