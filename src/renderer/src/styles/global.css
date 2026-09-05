@@ -318,6 +318,35 @@ textarea {
   padding: 0;
 }
 
+/*
+ * A name that opens something. It used to be a ghost button with the padding
+ * removed, which is indistinguishable from plain text — so the only route to
+ * an instance's settings looked like no route at all.
+ */
+.linkbtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  border-bottom: 1px dotted var(--line-strong);
+}
+
+.linkbtn:hover,
+.linkbtn:focus-visible {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* A ghost button whose action destroys something. */
+.btn--danger-ghost:hover:not(:disabled) {
+  color: var(--critical);
+  border-color: var(--critical);
+}
+
 /* Download progress. Indeterminate when the server sends no length. */
 .progress {
   height: 4px;

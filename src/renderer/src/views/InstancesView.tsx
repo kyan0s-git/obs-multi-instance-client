@@ -16,6 +16,7 @@ import {
   IconFolder,
   IconLayers,
   IconPlay,
+  IconSettings,
   IconPlus,
   IconRefresh,
   IconStop,
@@ -37,6 +38,10 @@ export default function InstancesView(): JSX.Element {
   const [massUpdating, setMassUpdating] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<ObsInstance | null>(null)
+  // Deleting is driven from the list rather than from inside the configure
+  // dialog: the only route used to be clicking the instance name, which does
+  // not look like a control, so the action was effectively unreachable.
+  const [deleting, setDeleting] = useState<ObsInstance | null>(null)
   const [preview, setPreview] = useState<{ instance: ObsInstance; preview: LaunchPreview } | null>(
     null
   )
@@ -189,8 +194,8 @@ export default function InstancesView(): JSX.Element {
                             }}
                           />
                           <button
-                            className="btn btn--ghost btn--sm"
-                            style={{ padding: 0, fontWeight: 600 }}
+                            className="linkbtn"
+                            title="Configure this instance"
                             onClick={() => setEditing(instance)}
                           >
                             {instance.name}
@@ -290,6 +295,20 @@ export default function InstancesView(): JSX.Element {
                           >
                             <IconWrench size={12} />
                           </button>
+                          <button
+                            className="btn btn--sm btn--ghost"
+                            title="Configure this instance"
+                            onClick={() => setEditing(instance)}
+                          >
+                            <IconSettings size={12} />
+                          </button>
+                          <button
+                            className="btn btn--sm btn--ghost btn--danger-ghost"
+                            title="Delete this instance"
+                            onClick={() => setDeleting(instance)}
+                          >
+                            <IconTrash size={12} />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -309,7 +328,24 @@ export default function InstancesView(): JSX.Element {
           onApplied={() => setSelected(new Set())}
         />
       )}
-      {editing && <EditDialog instance={editing} onClose={() => setEditing(null)} />}
+      {editing && (
+        <EditDialog
+          instance={editing}
+          onClose={() => setEditing(null)}
+          onRequestDelete={(instance) => {
+            // Hand the confirmation to the list so two dialogs never stack.
+            setEditing(null)
+            setDeleting(instance)
+          }}
+        />
+      )}
+      {deleting && (
+        <DeleteConfirm
+          instance={deleting}
+          onCancel={() => setDeleting(null)}
+          onDone={() => setDeleting(null)}
+        />
+      )}
       {preview && (
         <Dialog
           title={`Launch command — ${preview.instance.name}`}
@@ -952,17 +988,18 @@ function CreateDialog({ onClose }: { onClose: () => void }): JSX.Element {
 
 function EditDialog({
   instance,
-  onClose
+  onClose,
+  onRequestDelete
 }: {
   instance: ObsInstance
   onClose: () => void
+  onRequestDelete: (instance: ObsInstance) => void
 }): JSX.Element {
   const workspace = useFleet((state) => state.workspace)
   const snapshot = useFleet((state) => state.snapshots[instance.id])
 
   const [draft, setDraft] = useState<ObsInstance>(instance)
   const [busy, setBusy] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
 
   useEffect(() => setDraft(instance), [instance])
 
@@ -1003,7 +1040,7 @@ function EditDialog({
         <>
           <button
             className="btn btn--danger btn--sm"
-            onClick={() => setConfirmDelete(true)}
+            onClick={() => onRequestDelete(instance)}
             disabled={busy}
           >
             <IconTrash size={12} /> Delete
@@ -1276,13 +1313,6 @@ function EditDialog({
         </div>
       </Panel>
 
-      {confirmDelete && (
-        <DeleteConfirm
-          instance={instance}
-          onCancel={() => setConfirmDelete(false)}
-          onDone={onClose}
-        />
-      )}
     </Dialog>
   )
 }
