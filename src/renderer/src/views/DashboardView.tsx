@@ -48,15 +48,21 @@ export default function DashboardView({
   if (installs.length === 0) {
     return (
       <Empty
-        title="No OBS installation registered"
+        title="No OBS installation yet"
         action={
-          <button className="btn btn--primary" onClick={() => onNavigate('settings')}>
-            Open settings
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn btn--primary" onClick={() => onNavigate('library')}>
+              Open the OBS library
+            </button>
+            <button className="btn" onClick={() => onNavigate('settings')}>
+              Add an existing OBS
+            </button>
+          </div>
         }
       >
-        OBS Fleet could not find OBS Studio automatically. Point it at your installation in Settings
-        and it will handle instance folders from there.
+        OBS Fleet could not find OBS Studio automatically. The OBS library can download a version
+        for you, or point Settings at a copy you already have — either way, instance folders are
+        handled from there.
       </Empty>
     )
   }

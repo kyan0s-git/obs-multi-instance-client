@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HashCache } from '../src/main/util/hash-cache'
+import { measureDir } from '../src/main/util/fsx'
 
 let workdir: string
 
@@ -184,5 +185,29 @@ describe('HashCache.tree', () => {
     const result = await cache.tree(path.join(workdir, 'nope'))
     expect(result.fileCount).toBe(0)
     expect(result.totalBytes).toBe(0)
+  })
+})
+
+describe('measureDir', () => {
+  it('stops at its deadline and says the figure is partial', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-measure-'))
+    try {
+      // Enough entries that a zero-millisecond budget is certain to expire
+      // part-way through rather than by luck.
+      for (let index = 0; index < 50; index += 1) {
+        await fs.writeFile(path.join(root, `file-${index}`), 'x'.repeat(512))
+      }
+
+      const bounded = await measureDir(root, 0)
+      expect(bounded.partial).toBe(true)
+
+      const complete = await measureDir(root, 10_000)
+      expect(complete.partial).toBe(false)
+      expect(complete.bytes).toBe(50 * 512)
+      // A partial walk never over-reports.
+      expect(bounded.bytes).toBeLessThanOrEqual(complete.bytes)
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 })

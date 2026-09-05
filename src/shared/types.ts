@@ -1103,8 +1103,14 @@ export interface RemovalPlan {
   affectedInstances: string[]
   /** Instances that are running right now and would be orphaned. */
   runningInstances: string[]
-  /** Folders that will be erased, with their size. */
-  deletions: Array<{ path: string; sizeBytes: number }>
+  /**
+   * Folders that will be erased, with their size.
+   *
+   * `partialSize` means the walk hit its time budget — an instance folder full
+   * of recordings can be enormous, and a dialog that waits for an exact figure
+   * is a dialog that arrives too late to inform the decision.
+   */
+  deletions: Array<{ path: string; sizeBytes: number; partialSize?: boolean }>
   /** Consequences worth reading before confirming. */
   warnings: string[]
   /** Reasons this cannot proceed at all, even forced. */

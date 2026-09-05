@@ -25,6 +25,14 @@ stagger between launches. Every launch flag OBS supports is exposed — profile,
 scene collection, starting scene, studio mode, auto-record, safe mode — and the
 exact command line is inspectable before you run it.
 
+**OBS library.** Hold several OBS versions on one machine and pin instances to
+whichever they need. Download a release from inside the app — verified against
+the SHA-256 upstream publishes in its release notes — and it is installed
+alongside the others rather than over them, so upgrading is a deliberate act
+and never changes an instance mid-show. Plugins and themes are managed per
+instance: one instance can run a plugin another does not, and each picks its
+own theme.
+
 **Mass update.** Change any instance setting across a selection in one pass —
 the OBS installation they run from, launch flags, starting profile and scene
 collection, roles and colours. Only the fields you tick are written, so
@@ -63,10 +71,58 @@ reload on top: edit an overlay and every browser source showing it refreshes.
 One HTML file can render differently per instance, and a browser source can be
 pushed into any subset of the fleet in one action.
 
+**One configuration.** The whole client setup — settings, thresholds, window
+layout and every instance definition — exports as one small JSON document and
+imports with a preview of exactly what it would change. Websocket passwords stay
+out of it unless you ask, and this machine's folders and ports are kept by
+default, since another rig's paths may not exist here.
+
 **Import and export.** Pack profiles, scene collections, window layouts and the
 asset library into a single zip, hand it to a colleague or archive it with the
 show, and import it back into any instance. Importing runs through the same
 rewrites as a sync, so a restored profile still records to the right folder.
+
+---
+
+## Managing OBS itself
+
+| Platform | Downloading OBS |
+| --- | --- |
+| Windows | Full. Upstream publishes a portable `.zip`, which unpacks into the workspace with no administrator rights and sits alongside any other copy. |
+| macOS | Full. The `.dmg` is mounted with `hdiutil`, the bundle copied out, and the image detached. |
+| Linux | Not offered. Upstream publishes no portable Linux build — only a `.deb` for one Ubuntu release, which installs system-wide rather than side by side. Install OBS with your package manager or Flatpak and add it under Settings. |
+
+Downloads are verified against the SHA-256 checksums upstream lists in each
+release's notes, and the file is renamed into place only after it matches, so an
+interrupted download can never be mistaken for a finished one. Debug-symbol
+archives are the other large `.zip` in an OBS release and are never installable.
+
+**Plugins are per instance.** OBS reads `OBS_PLUGINS_PATH` and
+`OBS_PLUGINS_DATA_PATH` before it decides whether it is in portable mode, which
+makes those two variables the only plugin mechanism that works for a portable
+Windows instance — the usual per-user plugin folder is never searched. Each
+instance is pointed at its own folder, so a plugin can be added to one instance
+without touching the others, and plugins that came with the OBS installation are
+shown for reference but belong to that installation.
+
+**Themes are per instance too**, written as `[Appearance] Theme` in the
+instance's own config. Themes that ship with OBS are listed alongside any you
+install.
+
+---
+
+## Removing things
+
+Removal states its consequences rather than asking whether you are sure. Before
+anything happens you see which instances would be left without an installation,
+which are running right now, and exactly which folders would be erased and how
+big they are. Typing the name is required only when files are actually
+destroyed.
+
+Two refusals remain, because they protect files the application did not create:
+it will not delete an OBS installation it did not download, and it will not
+erase an instance folder that lives outside the workspace. Both are unregistered
+instead.
 
 ---
 
@@ -316,6 +372,14 @@ A twelve-instance fleet is a lot of polling, so a few things are deliberate:
   stacked.
 - **Asset listings are cached per folder** and invalidated by the watcher, with
   a cap on how many files a single attached folder contributes.
+- **Release archives are extracted through a file handle, not into memory.** An
+  OBS release is about 150 MB and the machine is already running several OBS
+  instances; peak memory during an install is one archive entry.
+- **Folder sizes in confirmation dialogs are measured against a deadline.** An
+  instance folder holds its recordings, so an exact figure can take longer than
+  the decision is worth waiting for; the dialog says "over" and shows a lower
+  bound instead.
+- **The OBS release list is cached** rather than refetched on every visit.
 - **Health is published only when a verdict moves.** It is recomputed every two
   seconds for the life of the session; emitting unconditionally would cost an
   IPC message and a re-render of every health consumer even with the fleet

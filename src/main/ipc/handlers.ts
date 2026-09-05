@@ -825,7 +825,11 @@ function buildHandlers(
     planConfigurationImport: async (file, options) => {
       const document = readConfigExport(await fs.readFile(file, 'utf8'))
       return planConfigImport(
-        { settings: store.getSettings(), instances: store.getInstances() },
+        {
+          settings: store.getSettings(),
+          instances: store.getInstances(),
+          installCount: store.getInstalls().length
+        },
         document,
         options
       )
@@ -834,7 +838,11 @@ function buildHandlers(
     applyConfigurationImport: async (file, options) => {
       const document = readConfigExport(await fs.readFile(file, 'utf8'))
       const plan = planConfigImport(
-        { settings: store.getSettings(), instances: store.getInstances() },
+        {
+          settings: store.getSettings(),
+          instances: store.getInstances(),
+          installCount: store.getInstalls().length
+        },
         document,
         options
       )

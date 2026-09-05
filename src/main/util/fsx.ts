@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, type Dirent } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -147,25 +147,66 @@ export async function hashTree(root: string): Promise<string> {
 }
 
 export async function dirSize(root: string): Promise<number> {
+  return (await measureDir(root)).bytes
+}
+
+export interface DirMeasurement {
+  bytes: number
+  /** True when the walk stopped early, so `bytes` is a lower bound. */
+  partial: boolean
+}
+
+/**
+ * Directory size with a time budget.
+ *
+ * An instance folder holds its recordings, which on a working rig is measured
+ * in hundreds of gigabytes. Walking that to put a number in a confirmation
+ * dialog would stall the dialog for as long as the disk takes, so the walk
+ * gives up after a deadline and says the figure is a lower bound. A slightly
+ * vague size shown immediately beats an exact one that arrives too late to
+ * inform the decision.
+ */
+export async function measureDir(
+  root: string,
+  budgetMs = DIR_SIZE_BUDGET_MS
+): Promise<DirMeasurement> {
+  const deadline = Date.now() + budgetMs
   let total = 0
+  let partial = false
+
   async function walk(dir: string): Promise<void> {
-    let names: string[]
+    if (partial) return
+
+    let entries: Dirent[]
     try {
-      names = await fs.readdir(dir)
+      entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {
       return
     }
-    for (const name of names) {
-      const abs = path.join(dir, name)
-      const stat = await fs.lstat(abs).catch(() => null)
-      if (!stat) continue
-      if (stat.isDirectory()) await walk(abs)
-      else if (stat.isFile()) total += stat.size
+
+    for (const entry of entries) {
+      if (Date.now() > deadline) {
+        partial = true
+        return
+      }
+
+      const abs = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(abs)
+      } else if (entry.isFile()) {
+        // `readdir` already told us the kind, so this is the only stat needed.
+        const stat = await fs.lstat(abs).catch(() => null)
+        if (stat) total += stat.size
+      }
     }
   }
+
   await walk(root)
-  return total
+  return { bytes: total, partial }
 }
+
+/** Long enough for an ordinary folder, short enough not to stall a dialog. */
+const DIR_SIZE_BUDGET_MS = 1500
 
 /** Recursive delete that never throws when the target is already gone. */
 export async function removeQuiet(target: string): Promise<void> {

@@ -113,7 +113,10 @@ export function RemovalDialog({
                   <div key={deletion.path} className="row mono" style={{ fontSize: 11, gap: 8 }}>
                     <span style={{ wordBreak: 'break-all' }}>{deletion.path}</span>
                     <div className="spacer" />
-                    <span className="num faint">{formatBytes(deletion.sizeBytes)}</span>
+                    <span className="num faint">
+                      {deletion.partialSize ? 'over ' : ''}
+                      {formatBytes(deletion.sizeBytes)}
+                    </span>
                   </div>
                 ))}
               </div>

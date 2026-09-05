@@ -209,3 +209,24 @@ describe('workspace containment', () => {
     expect(isInsideWorkspace(`${path.join(workspace, 'instances')}-evil`, workspace)).toBe(false)
   })
 })
+
+describe('size measurement is bounded', () => {
+  it('reports a lower bound rather than stalling on a huge folder', async () => {
+    const dir = path.join(workspace, 'instances', 'big')
+    await fs.mkdir(path.join(dir, 'recordings'), { recursive: true })
+    for (let index = 0; index < 40; index += 1) {
+      await fs.writeFile(path.join(dir, 'recordings', `take-${index}.mkv`), 'x'.repeat(4096))
+    }
+
+    const plan = await planInstanceRemoval(
+      'a',
+      true,
+      context({ instances: [makeInstance('a', 'Big', dir)] })
+    )
+
+    // Well inside the budget here, so it completes; the property being pinned
+    // is that the field exists and a completed walk is not marked partial.
+    expect(plan.deletions[0].sizeBytes).toBeGreaterThan(0)
+    expect(plan.deletions[0].partialSize).toBe(false)
+  })
+})

@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { ObsInstall, ObsInstance, RemovalPlan } from '@shared/types'
-import { dirSize, pathExists } from '../util/fsx.js'
+import { measureDir, pathExists } from '../util/fsx.js'
 import { workspacePaths } from './paths.js'
 
 /**
@@ -65,7 +65,12 @@ export async function planInstanceRemoval(
           'The instance will be removed from the roster only.'
       )
     } else if (await pathExists(instance.dir)) {
-      plan.deletions.push({ path: instance.dir, sizeBytes: await dirSize(instance.dir).catch(() => 0) })
+      const measured = await measureDir(instance.dir).catch(() => ({ bytes: 0, partial: false }))
+      plan.deletions.push({
+        path: instance.dir,
+        sizeBytes: measured.bytes,
+        partialSize: measured.partial
+      })
       plan.destructive = true
       plan.warnings.push(
         'This deletes the instance folder, including its profiles, scene collections and any ' +
@@ -125,7 +130,12 @@ export async function planInstallRemoval(
           'Remove it with the installer that put it there; this only clears the entry.'
       )
     } else if (await pathExists(install.root)) {
-      plan.deletions.push({ path: install.root, sizeBytes: await dirSize(install.root).catch(() => 0) })
+      const measured = await measureDir(install.root).catch(() => ({ bytes: 0, partial: false }))
+      plan.deletions.push({
+        path: install.root,
+        sizeBytes: measured.bytes,
+        partialSize: measured.partial
+      })
       plan.destructive = true
       plan.warnings.push(
         'This deletes the downloaded OBS build itself. Instances using it will need another ' +

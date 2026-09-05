@@ -31,6 +31,9 @@ const SMOKE_RENDER_GRACE_MS = 2500
  */
 const SMOKE_MIN_ELEMENTS = 10
 
+/** Long enough for a lazily-loaded view chunk to arrive and render. */
+const SMOKE_VIEW_SETTLE_MS = 900
+
 let mainWindow: BrowserWindow | null = null
 let supervisor: Supervisor | null = null
 let shuttingDown = false
@@ -166,6 +169,32 @@ async function verifyRenderedUi(window: BrowserWindow, rendererErrors: string[])
       'document.querySelectorAll("#root *").length'
     )
 
+    // Every view, not just the one that happens to load first. A view that
+    // throws on open is invisible to a check that only ever sees the
+    // dashboard, and that is exactly how a broken page ships.
+    //
+    // The bar per view is "rendered something and said nothing", not a
+    // element count: on an empty workspace most views correctly render a
+    // short empty state, and holding them to the whole-app floor would fail
+    // the check for doing the right thing.
+    const views = await walkViews(window, rendererErrors)
+    for (const view of views) {
+      if (view.elements === 0) {
+        log.error('main', `Smoke test: "${view.label}" mounted nothing`)
+        exitCode = 1
+      }
+      if (view.errors > 0) {
+        log.error('main', `Smoke test: "${view.label}" logged ${view.errors} renderer error(s)`)
+        exitCode = 1
+      }
+    }
+    log.info(
+      'main',
+      `Smoke test: visited ${views.length} view(s) — ${views
+        .map((view) => `${view.label}:${view.elements}`)
+        .join(' ')}`
+    )
+
     if (mounted < SMOKE_MIN_ELEMENTS) {
       log.error(
         'main',
@@ -187,6 +216,50 @@ async function verifyRenderedUi(window: BrowserWindow, rendererErrors: string[])
   }
 
   app.quit()
+}
+
+/**
+ * Clicks through every navigation item and reports what each mounted.
+ *
+ * Driven through the real UI rather than by importing the views, so it
+ * exercises the same lazy-loading and IPC the operator does.
+ */
+async function walkViews(
+  window: BrowserWindow,
+  rendererErrors: string[]
+): Promise<Array<{ label: string; elements: number; errors: number }>> {
+  const labels: string[] = await window.webContents.executeJavaScript(
+    'Array.from(document.querySelectorAll(".navitem")).map((node) => node.textContent.trim())'
+  )
+
+  const results: Array<{ label: string; elements: number; errors: number }> = []
+
+  for (let index = 0; index < labels.length; index += 1) {
+    const errorsBefore = rendererErrors.length
+
+    await window.webContents.executeJavaScript(
+      `document.querySelectorAll(".navitem")[${index}].click()`
+    )
+    // Views are separate chunks, so the first open waits on a load.
+    await new Promise((resolve) => setTimeout(resolve, SMOKE_VIEW_SETTLE_MS))
+
+    const elements: number = await window.webContents.executeJavaScript(
+      'document.querySelectorAll(".view *").length'
+    )
+    if (process.env.OBSFLEET_DUMP_VIEWS === '1') {
+      const text: string = await window.webContents.executeJavaScript(
+        '(document.querySelector(".view")?.innerText || "").replace(/\\s+/g, " ").slice(0, 300)'
+      )
+      log.info('main', `VIEW ${labels[index]} :: ${text}`)
+    }
+    results.push({
+      label: labels[index] ?? `#${index}`,
+      elements,
+      errors: rendererErrors.length - errorsBefore
+    })
+  }
+
+  return results
 }
 
 async function detectInstallsOnFirstRun(): Promise<void> {

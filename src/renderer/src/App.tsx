@@ -84,10 +84,10 @@ const NAV: NavEntry[] = [
   { id: 'assets', label: 'HTML sources', icon: <IconLayers />, section: 'Configure' },
   { id: 'stats', label: 'Telemetry', icon: <IconChart />, section: 'Inspect' },
   { id: 'logs', label: 'Logs', icon: <IconTerminal />, section: 'Inspect' },
-  // Settings used to sit under "Inspect", which is the one place nobody looks
-  // for it. It configures the workspace, so it belongs with the other things
-  // that do.
-  { id: 'settings', label: 'Settings', icon: <IconSettings />, section: 'Configure' }
+  // Settings used to sit under "Inspect", between Telemetry and Logs, which is
+  // the one place nobody looks for it. Its own section keeps it last, where
+  // settings belong, rather than buried mid-list under "Configure".
+  { id: 'settings', label: 'Settings', icon: <IconSettings />, section: 'Application' }
 ]
 
 const VIEW_TITLES: Record<ViewId, { title: string; sub: string }> = {

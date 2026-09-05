@@ -194,3 +194,50 @@ describe('settings to apply', () => {
     expect(settingsToApply(defaultSettings(), options({ settings: false }))).toEqual({})
   })
 })
+
+describe('instances need somewhere to run', () => {
+  it('blocks creating instances when no OBS installation is registered', () => {
+    const incoming = buildConfigExport(defaultSettings(), [makeInstance('ISO 9')], {
+      includeSecrets: false,
+      appVersion: '0.4.0'
+    })
+
+    const plan = planConfigImport(
+      { settings: defaultSettings(), instances: [], installCount: 0 },
+      incoming,
+      options()
+    )
+
+    expect(plan.blockers.join(' ')).toMatch(/No OBS installation/i)
+  })
+
+  it('allows the import when an installation exists', () => {
+    const incoming = buildConfigExport(defaultSettings(), [makeInstance('ISO 9')], {
+      includeSecrets: false,
+      appVersion: '0.4.0'
+    })
+
+    const plan = planConfigImport(
+      { settings: defaultSettings(), instances: [], installCount: 1 },
+      incoming,
+      options()
+    )
+
+    expect(plan.blockers).toEqual([])
+  })
+
+  it('does not block a settings-only import with no installations', () => {
+    const incoming = buildConfigExport(defaultSettings(), [], {
+      includeSecrets: false,
+      appVersion: '0.4.0'
+    })
+
+    const plan = planConfigImport(
+      { settings: defaultSettings(), instances: [], installCount: 0 },
+      incoming,
+      options({ instances: false })
+    )
+
+    expect(plan.blockers).toEqual([])
+  })
+})

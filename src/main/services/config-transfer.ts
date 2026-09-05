@@ -113,7 +113,7 @@ export function readConfigExport(json: string): ConfigExport {
  * that the workspace root moved.
  */
 export function planConfigImport(
-  current: { settings: WorkspaceSettings; instances: ObsInstance[] },
+  current: { settings: WorkspaceSettings; instances: ObsInstance[]; installCount?: number },
   incoming: ConfigExport,
   options: ConfigImportOptions
 ): ConfigImportPlan {
@@ -184,6 +184,16 @@ export function planConfigImport(
 
   if (!options.settings && !options.instances) {
     plan.blockers.push('Nothing selected to import.')
+  }
+
+  // An instance needs an OBS to launch. Creating them against nothing would
+  // produce a roster of instances that all fail at the first launch, which is
+  // worse than refusing here.
+  if (options.instances && plan.newInstances.length > 0 && current.installCount === 0) {
+    plan.blockers.push(
+      'No OBS installation is registered, so instances cannot be created. Install or add one from ' +
+        'the OBS library first.'
+    )
   }
 
   return plan

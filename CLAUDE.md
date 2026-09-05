@@ -47,8 +47,10 @@ design decisions.
 npm run dev         # hot-reloading development build
 npm run typecheck   # main (tsconfig.node.json) + renderer (tsconfig.web.json)
 npm test            # vitest: launch args, tiling, ini, health, sync, zip,
-                    #         bundle, ui-layout, hash-cache, asset-server,
-                    #         bulk-update, version, store-snapshot
+                    #         zip-extract, bundle, ui-layout, hash-cache,
+                    #         asset-server, bulk-update, version,
+                    #         store-snapshot, obs-catalog, obs-addons,
+                    #         removal, config-transfer
 npm run logo        # regenerate build/logo.svg and build/icon.png
 npm run build       # typecheck + electron-vite build into out/
 npm run dist        # packaged installer for the current platform
@@ -191,6 +193,52 @@ maps, type declarations and `@msgpack`'s duplicate builds, and
 If you add a dependency that resolves through a path one of those globs
 excludes, the packaged app breaks while `npm run dev` stays fine — check by
 running the packaged binary, not the source.
+
+**Per-instance plugins work only through the environment variables.** OBS's
+`AddExtraModulePaths` (frontend/widgets/OBSBasic.cpp) reads `OBS_PLUGINS_PATH`
+and `OBS_PLUGINS_DATA_PATH` and *then* does `if (portable_mode) return;`.
+Windows instances here are portable, so the per-user plugin folder is never
+searched, and those two variables are the only mechanism left. OBS also requires
+both to be set before it adds the path at all, so `launch-args.ts` always writes
+them as a pair. On macOS they point at a folder of `.plugin` bundles; elsewhere
+at separate `bin` and `data` trees.
+
+**OBS theme metadata is single-quoted.** `@OBSThemeMeta { id: 'com...'; }` —
+OBS's own themes are written that way and its tokeniser accepts either style. A
+parser written for double quotes finds no metadata in any bundled theme, which
+is exactly the bug `tests/obs-addons.test.ts` pins. The selected theme is
+`[Appearance] Theme` in `user.ini`, holding the declared id rather than the
+filename; `[General] CurrentTheme3` is the pre-30.2 key and is read, never
+written.
+
+**OBS release assets are matched by name and verified by checksum.** Upstream
+publishes SHA-256 hashes in a `### Checksums` block in the release notes, which
+`obs-catalog.ts` parses. Two traps: the debug-symbol archive is the *larger*
+`.zip` in a release and must never be installable, and an asset carries the OS
+it targets — matching on kind alone once selected the Windows portable archive
+for a Linux host. Linux gets an honest refusal, because upstream ships no
+portable Linux build.
+
+**Removal explains instead of refusing.** `removal.ts` builds a plan naming what
+breaks; the UI shows it and only requires typing the name when files are
+actually destroyed. Two refusals are kept and must stay: never delete an OBS
+install this application did not download (`managed !== true`), and never erase
+an instance folder outside the workspace. Both unregister instead.
+
+**Large archives go through `zip-extract.ts`, not `zip.ts`.** The Buffer-based
+reader is right for configuration bundles; an OBS release is ~150 MB and the
+machine is already running several OBS instances. The file-handle reader keeps
+peak memory to one entry. It is cross-checked against the system `zip` tool,
+because an extractor that only understands archives we wrote is no use here.
+
+**Folder sizes in dialogs are bounded.** `measureDir` takes a time budget and
+reports `partial` when it expires. An instance folder holds recordings; an exact
+figure can take longer than the decision is worth waiting for.
+
+**The smoke test walks every view.** It clicks each nav item and fails if one
+mounts nothing or logs a renderer error. The per-view bar is deliberately "not
+empty and silent" rather than an element count: on a fresh workspace most views
+correctly render a short empty state.
 
 **The preload is `.mjs`, not `.js`.** The package is `type: module`, so
 electron-vite emits ESM, and Electron loads an ESM preload only with

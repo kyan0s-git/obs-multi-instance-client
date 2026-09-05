@@ -1,6 +1,6 @@
 {
   "name": "obs-multi-instance-client",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Fleet control for multiple simultaneous OBS Studio instances \u2014 built for broadcast and production teams.",
   "main": "./out/main/index.js",
   "author": {
