@@ -83,6 +83,16 @@ export function buildLaunchSpec(
     delete env.XDG_CONFIG_HOME
   }
 
+  // Per-instance plugins.
+  //
+  // These two are the only plugin mechanism that survives portable mode:
+  // OBS's `AddExtraModulePaths` reads them and *then* returns early when
+  // portable, so on Windows — where instances here are portable — the usual
+  // per-user plugin folder is never searched. OBS also requires both to be set
+  // before it adds the path at all, so they are always written as a pair.
+  env.OBS_PLUGINS_PATH = paths.pluginsBinDir
+  env.OBS_PLUGINS_DATA_PATH = paths.pluginsDataDir
+
   // Marks the process so window enumeration and crash reports can attribute
   // it back to an instance even after a restart.
   env.OBS_FLEET_INSTANCE_ID = instance.id

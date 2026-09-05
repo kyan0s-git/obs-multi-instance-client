@@ -44,6 +44,22 @@ export interface InstancePaths {
   recordingsDir: string
   assetsDir: string
   /**
+   * Per-instance plugin root, handed to OBS through OBS_PLUGINS_PATH and
+   * OBS_PLUGINS_DATA_PATH.
+   *
+   * Those environment variables are the only plugin mechanism that works in
+   * portable mode: `AddExtraModulePaths` in OBS reads them *before* its
+   * `if (portable_mode) return;`, so the usual per-user plugin folder is never
+   * consulted on Windows, where this application uses portable mode.
+   */
+  pluginsDir: string
+  /** Binaries OBS loads: `.dll`/`.so`, or `.plugin` bundles on macOS. */
+  pluginsBinDir: string
+  /** Per-module data folders, named after the module. */
+  pluginsDataDir: string
+  /** User themes: `*.obt`, `*.ovt` and `*.oha`. */
+  themesDir: string
+  /**
    * Fake HOME handed to the child process on macOS. `null` on other
    * platforms, where HOME is left alone.
    */
@@ -102,6 +118,16 @@ export function instancePaths(instance: ObsInstance, install: ObsInstall): Insta
     logsDir: path.join(configDir, 'logs'),
     recordingsDir: path.join(root, 'recordings'),
     assetsDir: path.join(root, 'assets'),
+    pluginsDir: path.join(root, 'plugins'),
+    // On macOS (the home-redirect strategy) a plugin is a `.plugin` bundle
+    // carrying both its binary and its resources, so OBS is pointed at the
+    // same folder for each; elsewhere the binaries and the per-module data
+    // folders are separate trees.
+    pluginsBinDir:
+      strategy === 'home-redirect' ? path.join(root, 'plugins') : path.join(root, 'plugins', 'bin'),
+    pluginsDataDir:
+      strategy === 'home-redirect' ? path.join(root, 'plugins') : path.join(root, 'plugins', 'data'),
+    themesDir: path.join(configDir, 'themes'),
     fakeHome
   }
 }
@@ -140,6 +166,10 @@ export interface WorkspacePaths {
   templates: string
   /** Timestamped backups taken before a destructive sync. */
   backups: string
+  /** OBS builds this application downloaded, one folder per version. */
+  runtimes: string
+  /** Scratch space for in-flight downloads. */
+  downloads: string
 }
 
 export function workspacePaths(root: string): WorkspacePaths {
@@ -148,6 +178,10 @@ export function workspacePaths(root: string): WorkspacePaths {
     instances: path.join(root, 'instances'),
     assets: path.join(root, 'assets'),
     templates: path.join(root, 'templates'),
-    backups: path.join(root, 'backups')
+    backups: path.join(root, 'backups'),
+    // OBS builds this application downloaded, one folder per version. Kept
+    // beside the instances so a whole rig is one directory to back up.
+    runtimes: path.join(root, 'obs'),
+    downloads: path.join(root, 'downloads')
   }
 }

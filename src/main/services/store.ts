@@ -140,9 +140,19 @@ export class Store extends EventEmitter {
     return install
   }
 
-  async removeInstall(id: string): Promise<void> {
+  /**
+   * Unregisters an installation.
+   *
+   * `force` is required when instances still reference it. This used to be a
+   * hard refusal, which left an operator holding a broken entry — an OBS that
+   * had been uninstalled or moved could not be cleared without editing the
+   * workspace file by hand. Forcing leaves those instances needing an
+   * installation chosen before they launch, which is recoverable and is stated
+   * in the confirmation.
+   */
+  async removeInstall(id: string, force = false): Promise<void> {
     const inUse = this.instances.filter((i) => i.installId === id)
-    if (inUse.length > 0) {
+    if (inUse.length > 0 && !force) {
       throw new Error(
         `${inUse.length} instance(s) still use this install: ${inUse.map((i) => i.name).join(', ')}`
       )

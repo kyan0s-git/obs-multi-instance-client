@@ -29,6 +29,14 @@ export interface ObsInstall {
   version: string | null
   /** True when this entry was found by auto-detection rather than added by hand. */
   detected: boolean
+  /**
+   * True when OBS Fleet downloaded this install into its own workspace.
+   *
+   * Managed installs can be updated and deleted from inside the app, because
+   * the app put them there. A detected one belongs to the system and is only
+   * ever unregistered.
+   */
+  managed?: boolean
   /** Populated when the install fails validation. */
   problems: string[]
 }
@@ -899,3 +907,206 @@ export interface IpcEvents {
 }
 
 export type IpcEventName = keyof IpcEvents
+
+
+/* ------------------------------------------------------------------ */
+/* OBS catalogue: downloading and updating OBS itself                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a release asset is for on this platform.
+ *
+ * Only `portable-archive` can be installed side by side, which is the whole
+ * premise of a fleet. The others are listed so the UI can explain why a
+ * platform offers nothing rather than showing an empty list.
+ */
+export type ObsAssetKind = 'portable-archive' | 'disk-image' | 'installer' | 'package' | 'other'
+
+export interface ObsReleaseAsset {
+  name: string
+  downloadUrl: string
+  sizeBytes: number
+  /** Parsed from the release notes; `null` when upstream published none. */
+  sha256: string | null
+  kind: ObsAssetKind
+  /**
+   * Operating system the asset is built for.
+   *
+   * Carried explicitly because "portable archive" alone does not say: a
+   * Windows `.zip` and a hypothetical Linux one are the same kind, and picking
+   * by kind alone once selected a Windows build for a Linux host.
+   */
+  os: Platform | null
+  /** Architecture the asset targets, when the name states one. */
+  arch: 'x64' | 'arm64' | 'universal' | null
+}
+
+export interface ObsRelease {
+  /** Version without a leading `v`, e.g. `31.0.2`. */
+  version: string
+  tagName: string
+  publishedAt: number
+  prerelease: boolean
+  htmlUrl: string
+  assets: ObsReleaseAsset[]
+}
+
+export interface ObsCatalog {
+  fetchedAt: number
+  releases: ObsRelease[]
+  /** Set when this platform cannot install OBS from a download. */
+  unsupportedReason: string | null
+}
+
+export interface ObsInstallRequest {
+  version: string
+  /** Optional label override; defaults to `OBS Studio <version>`. */
+  label?: string
+}
+
+/** An available upgrade for a managed install. */
+export interface ObsUpdateCandidate {
+  installId: string
+  installLabel: string
+  currentVersion: string | null
+  latestVersion: string
+  /** Instances that would be affected, by name. */
+  usedBy: string[]
+}
+
+/* ------------------------------------------------------------------ */
+/* Long-running downloads                                              */
+/* ------------------------------------------------------------------ */
+
+export type DownloadState = 'queued' | 'downloading' | 'extracting' | 'done' | 'failed' | 'cancelled'
+
+/**
+ * A download the user can watch and cancel.
+ *
+ * Progress is pushed as an event rather than polled: an OBS release is a
+ * couple of hundred megabytes, and a progress bar driven by polling either
+ * stutters or costs more than the download.
+ */
+export interface DownloadJob {
+  id: string
+  kind: 'obs' | 'fleet'
+  label: string
+  state: DownloadState
+  receivedBytes: number
+  totalBytes: number | null
+  /** What is happening now, in words, for the UI. */
+  detail: string
+  error: string | null
+  startedAt: number
+  finishedAt: number | null
+}
+
+/* ------------------------------------------------------------------ */
+/* Plugins and themes                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * An OBS plugin visible to an instance.
+ *
+ * `scope` says where it came from, which decides whether this application may
+ * remove it: it owns the per-instance and shared folders it created, and does
+ * not own whatever the OBS installation shipped with.
+ */
+export interface ObsPlugin {
+  /** Module name as OBS sees it, i.e. the library's base name. */
+  id: string
+  name: string
+  scope: 'instance' | 'shared' | 'bundled'
+  /** Folder holding the plugin, for reveal-in-file-manager and removal. */
+  dir: string
+  sizeBytes: number
+  /** False when the folder is missing the binary OBS would load. */
+  loadable: boolean
+  problems: string[]
+}
+
+export interface ObsTheme {
+  /** Theme id from the file's metadata block, e.g. `com.obsproject.Yami`. */
+  id: string
+  name: string
+  author: string
+  /** `.obt` files are base themes; `.ovt` and `.oha` extend one. */
+  kind: 'base' | 'variant' | 'adjustment'
+  dark: boolean
+  extends: string | null
+  scope: 'instance' | 'bundled'
+  file: string
+}
+
+export interface InstanceAddons {
+  instanceId: string
+  plugins: ObsPlugin[]
+  themes: ObsTheme[]
+  /** Theme id currently selected in this instance's config. */
+  currentTheme: string | null
+}
+
+/* ------------------------------------------------------------------ */
+/* OBS Fleet self-update                                               */
+/* ------------------------------------------------------------------ */
+
+export interface FleetUpdate {
+  /** Version currently running, from the build metadata. */
+  currentVersion: string
+  latestVersion: string | null
+  /** True only when `latestVersion` is genuinely newer. */
+  updateAvailable: boolean
+  releaseUrl: string | null
+  publishedAt: number | null
+  notes: string | null
+  /** Asset for this platform, when the release carries one. */
+  downloadUrl: string | null
+  downloadName: string | null
+  downloadBytes: number | null
+  checkedAt: number
+  /** Set when the check could not be completed. */
+  error: string | null
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Removal                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What removing something would actually do.
+ *
+ * Built before anything is deleted so the confirmation can state consequences
+ * rather than ask "are you sure?". The blocking rule this replaced simply
+ * refused to remove an install any instance referenced, which left an operator
+ * with a broken entry they could not clear.
+ */
+export interface RemovalPlan {
+  /** Human summary of the thing being removed. */
+  subject: string
+  /** Instances that will be left pointing at nothing, by name. */
+  affectedInstances: string[]
+  /** Instances that are running right now and would be orphaned. */
+  runningInstances: string[]
+  /** Folders that will be erased, with their size. */
+  deletions: Array<{ path: string; sizeBytes: number }>
+  /** Consequences worth reading before confirming. */
+  warnings: string[]
+  /** Reasons this cannot proceed at all, even forced. */
+  blockers: string[]
+  /** True when the plan destroys files rather than only forgetting them. */
+  destructive: boolean
+}
+
+export interface RemoveInstallRequest {
+  installId: string
+  /** Delete the folder too. Only ever honoured for a managed install. */
+  deleteFiles: boolean
+  /**
+   * Proceed even though instances still reference this install.
+   *
+   * Those instances are left needing a new installation chosen before they can
+   * launch; that is a recoverable state, and refusing outright was worse.
+   */
+  force: boolean
+}
